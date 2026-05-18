@@ -27,6 +27,7 @@ sudo dnf install qt6-qtdeclarative qt6-qtbase # On Fedora
 ```
 
 5. (Optional) If you wish to use lsfg-vk within Flatpak applications, see the [Flatpak Guide](docs/Flatpak-Guide.md).
+6. (Optional) If you wish to use lsfg-vk with Steam Proton games (Windows games on Linux), see the [Proton Setup Guide](docs/Proton-Setup.md).
 
 ## Usage
 In order to start using lsfg-vk, you will need to configure it. This can either be done using the GUI application, or manually.

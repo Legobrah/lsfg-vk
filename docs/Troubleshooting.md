@@ -29,6 +29,19 @@ If lsfg-vk is loaded, but frame generation is not working:
 If games do not open at all with lsfg-vk enabled for them (stuck at black screen):
 - Ensure you configured the correct `gpu` for this profile, in case you have multiple GPUs and/or drivers (lsfg-vk-ui will show all available GPUs in a dropdown), lsfg-vk might be defaulting to a different one than the game is using
 
+### Proton / Steam Games
+
+Proton runs games inside a `pressure-vessel` sandbox that isolates the game process from the host filesystem. The Vulkan implicit layer at `/etc/vulkan/implicit_layer.d/` and the shared library at `/usr/lib/liblsfg-vk.so` are **not directly accessible** inside the container.
+
+**Symptoms**: Layer works for native Linux apps (like `vkcube`) but not for Proton games.
+
+**Fix**: Follow the [Proton Setup Guide](Proton-Setup.md). In short:
+1. Copy `liblsfg-vk.so` into Proton's `files/lib/x86_64-linux-gnu/` directory
+2. Create a layer JSON with an absolute `library_path` in `~/.local/share/vulkan/implicit_layer.d/`
+3. Set the Steam launch option: `VK_INSTANCE_LAYERS=VK_LAYER_LS_frame_generation %command%`
+
+**Note**: You must re-copy the .so after Proton updates.
+
 Should none of the above help, please proceed to the bug reporting section.
 
 ### Performance Overlays
