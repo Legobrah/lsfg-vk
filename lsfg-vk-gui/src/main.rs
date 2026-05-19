@@ -1,4 +1,3 @@
-// suppress dead_code warnings for future-use fields
 #![allow(dead_code)]
 mod config;
 mod overlay;
@@ -7,7 +6,6 @@ mod selector;
 
 use adw::prelude::*;
 use adw::Application;
-use config::GameConf;
 use gtk4::glib::clone;
 use gtk4::{self as gtk, Align, Orientation, PolicyType};
 use std::cell::{Cell, RefCell};
@@ -28,10 +26,8 @@ struct AppState {
     dirty: bool,
 }
 
-/// Holds references to the right-panel profile editing widgets.
 struct ProfileWidgets {
     name_row: adw::EntryRow,
-    active_in_label: gtk::Label,
     multiplier_row: adw::SpinRow,
     flow_row: adw::SpinRow,
     perf_switch: gtk::Switch,
@@ -40,9 +36,9 @@ struct ProfileWidgets {
     gpu_model: gtk::StringList,
     dll_row: adw::EntryRow,
     fp16_switch: gtk::Switch,
+    active_in_editor: selector::ActiveInEditor,
 }
 
-/// Holds top-level widgets needed by multiple signal handlers.
 struct AppWidgets {
     profile_listbox: gtk::ListBox,
     profile_group: adw::PreferencesGroup,
@@ -61,9 +57,6 @@ fn build_ui(app: &Application) {
         dirty: false,
     }));
 
-    // Guard against re-entrant signal handlers while loading profile into UI.
-    // load_profile_into_ui sets loading=true before touching widgets;
-    // every "changed" / "notify" handler checks this first and returns early.
     let loading = Rc::new(Cell::new(false));
 
     let window = adw::ApplicationWindow::builder()
@@ -73,9 +66,41 @@ fn build_ui(app: &Application) {
         .default_height(640)
         .build();
 
-    let content = gtk::Box::new(Orientation::Vertical, 0);
+    // --- Shortcuts controller ---
+    let shortcuts = gtk::ShortcutController::new();
+    shortcuts.set_scope(gtk::ShortcutScope::Global);
 
-    // --- Header bar ---
+    // Ctrl+S = Save
+    // Ctrl+S = Save
+    let save_action = gtk::CallbackAction::new({
+        let state = state.clone();
+        move |_widget, _| {
+            // Trigger save
+            let s = state.borrow();
+            if let Ok(()) = config::save_config(&s.config) {
+                drop(s);
+                state.borrow_mut().dirty = false;
+            }
+            gtk::glib::Propagation::Proceed
+        }
+    });
+    let save_shortcut = gtk::Shortcut::new(
+        Some(gtk::ShortcutTrigger::parse_string("<Control>s").unwrap()),
+        Some(save_action),
+    );
+    shortcuts.add_shortcut(save_shortcut);
+
+    // Ctrl+N = New profile (no-op placeholder)
+    let new_action = gtk::CallbackAction::new(move |_widget, _| {
+        gtk::glib::Propagation::Proceed
+    });
+    let new_shortcut = gtk::Shortcut::new(
+        Some(gtk::ShortcutTrigger::parse_string("<Control>n").unwrap()),
+        Some(new_action),
+    );
+    shortcuts.add_shortcut(new_shortcut);
+
+    let content = gtk::Box::new(Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
     content.append(&header);
 
@@ -88,7 +113,7 @@ fn build_ui(app: &Application) {
     left_panel.set_margin_end(12);
     left_panel.set_margin_top(12);
     left_panel.set_margin_bottom(12);
-    left_panel.set_width_request(220);
+    left_panel.set_width_request(240);
 
     let profile_label = gtk::Label::new(Some("Profiles"));
     profile_label.add_css_class("title-4");
@@ -101,8 +126,8 @@ fn build_ui(app: &Application) {
     // Populate profiles
     {
         let s = state.borrow();
-        for (i, p) in s.config.profiles.iter().enumerate() {
-            let row = make_profile_row(&p.name, i);
+        for (_i, p) in s.config.profiles.iter().enumerate() {
+            let row = make_profile_row(&p.name, p.multiplier, p.active_in_list().len());
             profile_listbox.append(&row);
         }
         let has_profiles = !s.config.profiles.is_empty();
@@ -121,13 +146,16 @@ fn build_ui(app: &Application) {
     scrolled.set_child(Some(&profile_listbox));
     left_panel.append(&scrolled);
 
-    let btn_box = gtk::Box::new(Orientation::Horizontal, 6);
+    let btn_box = gtk::Box::new(Orientation::Horizontal, 4);
     let btn_add = gtk::Button::with_label("Add");
-    let btn_rename = gtk::Button::with_label("Rename");
+    btn_add.set_hexpand(true);
+    let btn_dup = gtk::Button::with_label("Duplicate");
+    btn_dup.set_hexpand(true);
     let btn_delete = gtk::Button::with_label("Delete");
     btn_delete.add_css_class("destructive-action");
+    btn_delete.set_hexpand(true);
     btn_box.append(&btn_add);
-    btn_box.append(&btn_rename);
+    btn_box.append(&btn_dup);
     btn_box.append(&btn_delete);
     left_panel.append(&btn_box);
 
@@ -185,25 +213,28 @@ fn build_ui(app: &Application) {
 
     let name_row = adw::EntryRow::builder().title("Profile Name").build();
 
+    // Active In: chip editor instead of dialog
     let active_in_row = adw::ActionRow::builder()
         .title("Active In")
         .subtitle("Executables that trigger this profile")
         .build();
-    let active_in_label = gtk::Label::new(Some("(none)"));
-    active_in_label.set_valign(Align::Center);
-    active_in_label.add_css_class("dim-label");
-    active_in_row.add_suffix(&active_in_label);
 
-    // Smart Select button
-    let active_in_btn = gtk::Button::with_label("Select...");
-    active_in_btn.add_css_class("suggested-action");
-    active_in_btn.set_valign(Align::Center);
-    active_in_row.add_suffix(&active_in_btn);
-
-    // Manual edit fallback
-    let active_in_manual = gtk::Button::with_label("Edit Text...");
-    active_in_manual.set_valign(Align::Center);
-    active_in_row.add_suffix(&active_in_manual);
+    // Build the active_in editor with callback
+    let state_for_editor = state.clone();
+    let loading_for_editor = loading.clone();
+    let editor = selector::ActiveInEditor::new(Box::new(move |entries: Vec<String>| {
+        if loading_for_editor.get() {
+            return;
+        }
+        let mut s = state_for_editor.borrow_mut();
+        if let Some(idx) = s.selected_profile {
+            if let Some(profile) = s.config.profiles.get_mut(idx) {
+                profile.set_active_in(entries);
+                s.dirty = true;
+            }
+        }
+    }));
+    active_in_row.add_suffix(editor.widget());
 
     let multiplier_row = adw::SpinRow::builder()
         .title("Multiplier")
@@ -243,23 +274,27 @@ fn build_ui(app: &Application) {
         .model(&gtk::StringList::new(&["None"]))
         .build();
 
-    // Custom features section
+    // Custom features
     let custom_group = adw::PreferencesGroup::builder()
         .title("Custom Features")
-        .description("Your custom modifications to lsfg-vk")
         .build();
 
     let target_fps_row = adw::SpinRow::builder()
         .title("Target Output FPS")
-        .subtitle("Cap output FPS by throttling real frames (0 = uncapped)")
+        .subtitle("Cap output FPS (0 = uncapped)")
         .adjustment(&gtk::Adjustment::new(0.0, 0.0, 1000.0, 10.0, 30.0, 0.0))
         .build();
-    let badge = gtk::Label::new(Some("CUSTOM"));
-    badge.add_css_class("tag");
-    badge.add_css_class("accent");
-    badge.set_valign(Align::Center);
-    target_fps_row.add_suffix(&badge);
     custom_group.add(&target_fps_row);
+
+    // Proton status row
+    let proton_row = adw::ActionRow::builder()
+        .title("Proton Compatibility")
+        .subtitle("Checks if the layer is set up for Steam Proton games")
+        .build();
+    let proton_status = gtk::Label::new(Some("Checking..."));
+    proton_status.set_valign(Align::Center);
+    proton_row.add_suffix(&proton_status);
+    check_proton_status(&proton_status);
 
     // Action buttons
     let action_box = gtk::Box::new(Orientation::Horizontal, 8);
@@ -287,13 +322,13 @@ fn build_ui(app: &Application) {
     settings_box.append(&global_group);
     settings_box.append(&profile_group);
     settings_box.append(&custom_group);
+    settings_box.append(&proton_row);
     right_scrolled.set_child(Some(&settings_box));
 
-    // Bottom bar with status + inline metrics
+    // Bottom bar
     let bottom_bar = gtk::Box::new(Orientation::Vertical, 6);
     bottom_bar.set_margin_top(4);
 
-    // Inline status bar (layer status + active profiles)
     let (inline_status, _layer_lbl, _active_lbl, monitor_btn) = overlay::build_inline_status();
 
     let btn_row = gtk::Box::new(Orientation::Horizontal, 12);
@@ -316,7 +351,6 @@ fn build_ui(app: &Application) {
     // Bundle widgets
     let pw = ProfileWidgets {
         name_row,
-        active_in_label,
         multiplier_row,
         flow_row,
         perf_switch,
@@ -325,6 +359,7 @@ fn build_ui(app: &Application) {
         gpu_model,
         dll_row,
         fp16_switch,
+        active_in_editor: editor,
     };
 
     let widgets = Rc::new(AppWidgets {
@@ -335,9 +370,11 @@ fn build_ui(app: &Application) {
         pw,
     });
 
+    // Add shortcuts controller to window
+    window.add_controller(shortcuts);
+
     // --- Overlay window ---
     let overlay_state = Rc::new(RefCell::new(overlay::create_overlay()));
-
     {
         let overlay_state = overlay_state.clone();
         monitor_btn.connect_toggled(move |btn| {
@@ -349,8 +386,6 @@ fn build_ui(app: &Application) {
             }
         });
     }
-
-    // Sync overlay hidden state back to toggle button
     {
         let monitor_btn = monitor_btn.clone();
         overlay_state.borrow().window.connect_hide(move |_| {
@@ -391,21 +426,55 @@ fn build_ui(app: &Application) {
         move |_| {
             let mut s = state.borrow_mut();
             let name = format!("New Profile {}", s.config.profiles.len() + 1);
-            s.config.profiles.push(GameConf::default());
+            s.config.profiles.push(config::GameConf::default());
             let idx = s.config.profiles.len() - 1;
             s.config.profiles[idx].name = name.clone();
             s.dirty = true;
             drop(s);
 
-            let row = make_profile_row(&name, idx);
+            let row = make_profile_row(&name, 2, 0);
             widgets.profile_listbox.append(&row);
             widgets.profile_listbox.select_row(Some(&row));
-
             load_profile_into_ui(&state, &widgets, &loading);
+            update_dirty_title(&state, &widgets);
         }
     ));
 
-    // Delete profile (with confirmation)
+    // Duplicate profile
+    btn_dup.connect_clicked(clone!(
+        #[strong]
+        state,
+        #[strong]
+        widgets,
+        #[strong]
+        loading,
+        move |_| {
+            let mut s = state.borrow_mut();
+            if let Some(idx) = s.selected_profile {
+                if let Some(profile) = s.config.profiles.get(idx).cloned() {
+                    let mut dup = profile.clone();
+                    dup.name = format!("{} (copy)", dup.name);
+                    s.config.profiles.push(dup);
+                    s.dirty = true;
+                    drop(s);
+
+                    let last_idx = state.borrow().config.profiles.len() - 1;
+                    let p = state.borrow().config.profiles[last_idx].clone();
+                    let row = make_profile_row(
+                        &p.name,
+                        p.multiplier,
+                        p.active_in_list().len(),
+                    );
+                    widgets.profile_listbox.append(&row);
+                    widgets.profile_listbox.select_row(Some(&row));
+                    load_profile_into_ui(&state, &widgets, &loading);
+                    update_dirty_title(&state, &widgets);
+                }
+            }
+        }
+    ));
+
+    // Delete profile
     btn_delete.connect_clicked(clone!(
         #[strong]
         state,
@@ -433,9 +502,7 @@ fn build_ui(app: &Application) {
             );
             dialog.set_property(
                 "secondary-text",
-                format!(
-                    "This will remove the profile \"{profile_name}\". You still need to save to apply."
-                ),
+                "This will remove the profile. Save to apply.",
             );
             let state_c = state.clone();
             let widgets_c = widgets.clone();
@@ -458,32 +525,11 @@ fn build_ui(app: &Application) {
                         state_c.borrow_mut().selected_profile = None;
                     }
                     load_profile_into_ui(&state_c, &widgets_c, &loading_c);
+                    update_dirty_title(&state_c, &widgets_c);
                 }
                 dialog.close();
             });
             dialog.show();
-        }
-    ));
-
-    // Rename
-    btn_rename.connect_clicked(clone!(
-        #[strong]
-        state,
-        #[strong]
-        widgets,
-        move |_| {
-            let mut s = state.borrow_mut();
-            if let Some(idx) = s.selected_profile {
-                let new_name = widgets.pw.name_row.text().to_string();
-                if !new_name.trim().is_empty() && idx < s.config.profiles.len() {
-                    s.config.profiles[idx].name = new_name.clone();
-                    s.dirty = true;
-                    drop(s);
-                    if let Some(row) = widgets.profile_listbox.row_at_index(idx as i32) {
-                        update_row_label(&row, &new_name);
-                    }
-                }
-            }
         }
     ));
 
@@ -504,6 +550,7 @@ fn build_ui(app: &Application) {
                     return false;
                 }
                 save_profile_from_ui(&state_c, &widgets_c);
+                update_dirty_title(&state_c, &widgets_c);
                 false
             }
         ));
@@ -524,6 +571,7 @@ fn build_ui(app: &Application) {
                     return false;
                 }
                 save_profile_from_ui(&state_c, &widgets_c);
+                update_dirty_title(&state_c, &widgets_c);
                 false
             }
         ));
@@ -544,6 +592,7 @@ fn build_ui(app: &Application) {
                     return false;
                 }
                 save_profile_from_ui(&state_c, &widgets_c);
+                update_dirty_title(&state_c, &widgets_c);
                 false
             }
         ));
@@ -566,11 +615,12 @@ fn build_ui(app: &Application) {
                     return;
                 }
                 save_profile_from_ui(&state_c, &widgets_c);
+                update_dirty_title(&state_c, &widgets_c);
             }
         ));
     }
 
-    // GPU combo row
+    // GPU combo
     {
         let state_c = state.clone();
         let widgets_c = widgets.clone();
@@ -587,6 +637,7 @@ fn build_ui(app: &Application) {
                     return;
                 }
                 save_profile_from_ui(&state_c, &widgets_c);
+                update_dirty_title(&state_c, &widgets_c);
             }
         ));
     }
@@ -596,12 +647,21 @@ fn build_ui(app: &Application) {
         let state_c = state.clone();
         let widgets_c = widgets.clone();
         let loading_c = loading.clone();
-        widgets.pw.name_row.connect_changed(move |_| {
-            if loading_c.get() {
-                return;
+        widgets.pw.name_row.connect_changed(clone!(
+            #[strong]
+            state_c,
+            #[strong]
+            widgets_c,
+            #[strong]
+            loading_c,
+            move |_| {
+                if loading_c.get() {
+                    return;
+                }
+                save_profile_from_ui(&state_c, &widgets_c);
+                update_dirty_title(&state_c, &widgets_c);
             }
-            save_profile_from_ui(&state_c, &widgets_c);
-        });
+        ));
     }
 
     // Global: DLL path
@@ -609,196 +669,160 @@ fn build_ui(app: &Application) {
         let state_c = state.clone();
         let loading_c = loading.clone();
         let dll_row_ref = widgets.pw.dll_row.clone();
-        widgets.pw.dll_row.connect_changed(move |_| {
-            if loading_c.get() {
-                return;
+        widgets.pw.dll_row.connect_changed(clone!(
+            #[strong]
+            state_c,
+            #[strong]
+            loading_c,
+            #[strong]
+            dll_row_ref,
+            move |_| {
+                if loading_c.get() {
+                    return;
+                }
+                let text = dll_row_ref.text().to_string();
+                let mut s = state_c.borrow_mut();
+                if text.trim().is_empty() {
+                    s.config.global.dll = None;
+                } else {
+                    s.config.global.dll = Some(text);
+                }
+                s.dirty = true;
+                drop(s);
             }
-            let text = dll_row_ref.text().to_string();
-            let mut s = state_c.borrow_mut();
-            if text.trim().is_empty() {
-                s.config.global.dll = None;
-            } else {
-                s.config.global.dll = Some(text);
-            }
-            s.dirty = true;
-        });
+        ));
     }
 
-    // Global: FP16 switch
+    // Global: FP16
     {
         let state_c = state.clone();
         let loading_c = loading.clone();
         let fp16_ref = widgets.pw.fp16_switch.clone();
-        widgets.pw.fp16_switch.connect_active_notify(move |_| {
-            if loading_c.get() {
-                return;
-            }
-            let active = fp16_ref.is_active();
-            state_c.borrow_mut().config.global.allow_fp16 = active;
-            state_c.borrow_mut().dirty = true;
-        });
-    }
-
-    // Active In: Smart Selector button
-    {
-        let state_c = state.clone();
-        let loading_c = loading.clone();
-        let widgets_c = widgets.clone();
-        let window_ref = window.clone();
-        active_in_btn.connect_clicked(move |_| {
-            let already_added = {
-                let s = state_c.borrow();
-                s.selected_profile
-                    .and_then(|idx| s.config.profiles.get(idx))
-                    .map(|p| p.active_in_list())
-                    .unwrap_or_default()
-            };
-            let state_cc = state_c.clone();
-            let loading_cc = loading_c.clone();
-            let widgets_cc = widgets_c.clone();
-            selector::show_selector_dialog(
-                Some(&window_ref),
-                &already_added,
-                Box::new(move |selected: Vec<String>| {
-                    let mut s = state_cc.borrow_mut();
-                    if let Some(idx) = s.selected_profile {
-                        if let Some(profile) = s.config.profiles.get_mut(idx) {
-                            let mut current = profile.active_in_list();
-                            for name in selected {
-                                if !current.contains(&name) {
-                                    current.push(name);
-                                }
-                            }
-                            profile.set_active_in(current);
-                            s.dirty = true;
-                        }
-                    }
-                    drop(s);
-                    load_profile_into_ui(&state_cc, &widgets_cc, &loading_cc);
-                }),
-            );
-        });
-    }
-
-    // Active In: Manual edit button
-    {
-        let state_c = state.clone();
-        let loading_c = loading.clone();
-        let widgets_c = widgets.clone();
-        let window_ref = window.clone();
-        active_in_manual.connect_clicked(move |_| {
-            let current = {
-                let s = state_c.borrow();
-                s.selected_profile
-                    .and_then(|idx| s.config.profiles.get(idx))
-                    .map(|p| p.active_in_list().join(", "))
-                    .unwrap_or_default()
-            };
-
-            let dialog = gtk::Dialog::with_buttons(
-                Some("Edit Active In"),
-                Some(&window_ref),
-                gtk::DialogFlags::MODAL,
-                &[
-                    ("Cancel", gtk::ResponseType::Cancel),
-                    ("Apply", gtk::ResponseType::Ok),
-                ],
-            );
-            dialog.set_default_size(400, 200);
-
-            let content_area = dialog.content_area();
-            content_area.set_spacing(8);
-            content_area.set_margin_start(12);
-            content_area.set_margin_end(12);
-            content_area.set_margin_top(12);
-            content_area.set_margin_bottom(12);
-
-            let label = gtk::Label::new(Some("Enter executable names (comma or space separated):"));
-            label.set_halign(Align::Start);
-            content_area.append(&label);
-
-            let entry = gtk::Entry::new();
-            entry.set_text(&current);
-            entry.set_hexpand(true);
-            content_area.append(&entry);
-
-            let state_cc = state_c.clone();
-            let loading_cc = loading_c.clone();
-            let widgets_cc = widgets_c.clone();
-            dialog.connect_response(move |dialog, resp| {
-                if resp == gtk::ResponseType::Ok {
-                    let text = entry.text().to_string();
-                    let names: Vec<String> = text
-                        .split(|c: char| c == ',' || c.is_whitespace())
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    let mut s = state_cc.borrow_mut();
-                    if let Some(idx) = s.selected_profile {
-                        if let Some(profile) = s.config.profiles.get_mut(idx) {
-                            profile.set_active_in(names);
-                            s.dirty = true;
-                        }
-                    }
-                    drop(s);
-                    load_profile_into_ui(&state_cc, &widgets_cc, &loading_cc);
+        widgets.pw.fp16_switch.connect_active_notify(clone!(
+            #[strong]
+            state_c,
+            #[strong]
+            loading_c,
+            #[strong]
+            fp16_ref,
+            move |_| {
+                if loading_c.get() {
+                    return;
                 }
-                dialog.close();
-            });
-            dialog.show();
-        });
+                let active = fp16_ref.is_active();
+                state_c.borrow_mut().config.global.allow_fp16 = active;
+                state_c.borrow_mut().dirty = true;
+            }
+        ));
     }
 
     // Validate button
     {
         let state_c = state.clone();
         let widgets_c = widgets.clone();
-        validate_btn.connect_clicked(move |_| {
-            let s = state_c.borrow();
-            match config::validate_config(&s.config) {
-                Ok(()) => {
-                    widgets_c.status_label.set_text("Configuration is valid");
-                    widgets_c.status_label.remove_css_class("error");
-                }
-                Err(errors) => {
-                    widgets_c.status_label.set_text(&errors.join("; "));
-                    widgets_c.status_label.add_css_class("error");
+        validate_btn.connect_clicked(clone!(
+            #[strong]
+            state_c,
+            #[strong]
+            widgets_c,
+            move |_| {
+                let s = state_c.borrow();
+                match config::validate_config(&s.config) {
+                    Ok(()) => {
+                        widgets_c.status_label.set_text("Configuration is valid");
+                        widgets_c.status_label.remove_css_class("error");
+                    }
+                    Err(errors) => {
+                        widgets_c.status_label.set_text(&errors.join("; "));
+                        widgets_c.status_label.add_css_class("error");
+                    }
                 }
             }
-        });
+        ));
     }
 
     // Save button
     {
         let state_c = state.clone();
         let widgets_c = widgets.clone();
-        save_btn.connect_clicked(move |_| {
-            let s = state_c.borrow();
-            match config::save_config(&s.config) {
-                Ok(()) => {
-                    widgets_c.status_label.set_text("Configuration saved");
-                    widgets_c.status_label.remove_css_class("error");
-                    drop(s);
-                    state_c.borrow_mut().dirty = false;
-                }
-                Err(e) => {
-                    widgets_c
-                        .status_label
-                        .set_text(&format!("Save failed: {e}"));
-                    widgets_c.status_label.add_css_class("error");
+        save_btn.connect_clicked(clone!(
+            #[strong]
+            state_c,
+            #[strong]
+            widgets_c,
+            move |_| {
+                let s = state_c.borrow();
+                match config::save_config(&s.config) {
+                    Ok(()) => {
+                        widgets_c.status_label.set_text("Configuration saved");
+                        widgets_c.status_label.remove_css_class("error");
+                        drop(s);
+                        state_c.borrow_mut().dirty = false;
+                        update_dirty_title(&state_c, &widgets_c);
+                    }
+                    Err(e) => {
+                        widgets_c.status_label.set_text(&format!("Save failed: {e}"));
+                        widgets_c.status_label.add_css_class("error");
+                    }
                 }
             }
-        });
+        ));
+    }
+
+    // Confirm before quit if dirty
+    {
+        let state_c = state.clone();
+        let widgets_c = widgets.clone();
+        window.connect_close_request(clone!(
+            #[strong]
+            state_c,
+            #[strong]
+            widgets_c,
+            move |_| {
+                if state_c.borrow().dirty {
+                    let dialog = gtk::MessageDialog::new(
+                        Some(&widgets_c.window),
+                        gtk::DialogFlags::MODAL,
+                        gtk::MessageType::Question,
+                        gtk::ButtonsType::YesNo,
+                        "Unsaved changes",
+                    );
+                    dialog.set_property(
+                        "secondary-text",
+                        "You have unsaved changes. Discard and quit?",
+                    );
+                    let state_cc = state_c.clone();
+                    let widgets_cc = widgets_c.clone();
+                    dialog.connect_response(move |dialog, resp| {
+                        if resp == gtk::ResponseType::Yes {
+                            state_cc.borrow_mut().dirty = false;
+                            widgets_cc.window.close();
+                        }
+                        dialog.close();
+                    });
+                    dialog.show();
+                    gtk::glib::Propagation::Stop
+                } else {
+                    gtk::glib::Propagation::Proceed
+                }
+            }
+        ));
     }
 
     window.present();
 }
 
-/// Load the currently selected profile's values into the right-panel widgets.
-///
-/// Sets `loading = true` for the entire duration so that the synchronous
-/// "changed" / "notify" signals fired by `set_text`, `set_value`, etc.
-/// are ignored by their handlers (avoiding a RefCell double-borrow panic).
+/// Update window title with dirty indicator.
+fn update_dirty_title(state: &Rc<RefCell<AppState>>, widgets: &Rc<AppWidgets>) {
+    let dirty = state.borrow().dirty;
+    let title = if dirty {
+        "* lsfg-vk Configuration"
+    } else {
+        "lsfg-vk Configuration"
+    };
+    widgets.window.set_title(Some(title));
+}
+
 fn load_profile_into_ui(
     state: &Rc<RefCell<AppState>>,
     widgets: &Rc<AppWidgets>,
@@ -815,10 +839,9 @@ fn load_profile_into_ui(
             pw.multiplier_row.set_value(profile.multiplier as f64);
             pw.flow_row.set_value(profile.flow_scale as f64);
             pw.perf_switch.set_active(profile.performance_mode);
-            pw.target_fps_row
-                .set_value(profile.target_fps.unwrap_or(0) as f64);
+            pw.target_fps_row.set_value(profile.target_fps.unwrap_or(0) as f64);
 
-            // GPU selection: index 0 = "Default" (None), else match by name
+            // GPU
             let mut gpu_selected: u32 = 0;
             if let Some(ref gpu_name) = profile.gpu {
                 let n = pw.gpu_model.n_items();
@@ -833,25 +856,19 @@ fn load_profile_into_ui(
             }
             pw.gpu_row.set_selected(gpu_selected);
 
-            // Active in label
-            let list = profile.active_in_list();
-            if list.is_empty() {
-                pw.active_in_label.set_text("(none)");
-            } else {
-                pw.active_in_label.set_text(&list.join(", "));
-            }
+            // Active in -> chips
+            pw.active_in_editor.set_entries(profile.active_in_list());
 
             widgets.profile_group.set_description(None);
         }
     } else {
-        // No profile selected – clear / reset all fields
         pw.name_row.set_text("");
         pw.multiplier_row.set_value(2.0);
         pw.flow_row.set_value(1.0);
         pw.perf_switch.set_active(false);
         pw.target_fps_row.set_value(0.0);
         pw.gpu_row.set_selected(0);
-        pw.active_in_label.set_text("(none)");
+        pw.active_in_editor.set_entries(vec![]);
         widgets
             .profile_group
             .set_description(Some("Select a profile from the list to edit"));
@@ -860,39 +877,23 @@ fn load_profile_into_ui(
     loading.set(false);
 }
 
-/// Read the current widget values and write them back into the selected profile
-/// in `state`.  Called from every per-profile "changed" signal handler.
 fn save_profile_from_ui(state: &Rc<RefCell<AppState>>, widgets: &Rc<AppWidgets>) {
-    // Read all widget values first (no RefCell borrow needed for widget access)
     let name = widgets.pw.name_row.text().to_string();
     let multiplier = widgets.pw.multiplier_row.value() as u32;
     let flow_scale = widgets.pw.flow_row.value() as f32;
     let performance_mode = widgets.pw.perf_switch.is_active();
     let target_fps_val = widgets.pw.target_fps_row.value() as u32;
-    let target_fps = if target_fps_val == 0 {
-        None
-    } else {
-        Some(target_fps_val)
-    };
+    let target_fps = if target_fps_val == 0 { None } else { Some(target_fps_val) };
     let gpu_selected = widgets.pw.gpu_row.selected();
     let gpu_name: Option<String> = if gpu_selected == 0 {
         None
     } else {
-        widgets
-            .pw
-            .gpu_model
-            .string(gpu_selected)
-            .map(|s| s.to_string())
+        widgets.pw.gpu_model.string(gpu_selected).map(|s| s.to_string())
     };
 
-    // Borrow state mutably and apply
     let mut s = state.borrow_mut();
-    let Some(idx) = s.selected_profile else {
-        return;
-    };
-    let Some(profile) = s.config.profiles.get_mut(idx) else {
-        return;
-    };
+    let Some(idx) = s.selected_profile else { return };
+    let Some(profile) = s.config.profiles.get_mut(idx) else { return };
 
     let name_changed = profile.name != name;
 
@@ -906,16 +907,18 @@ fn save_profile_from_ui(state: &Rc<RefCell<AppState>>, widgets: &Rc<AppWidgets>)
 
     drop(s);
 
-    // Keep listbox label in sync when the user types a new name
     if name_changed {
-        if let Some(row) = widgets.profile_listbox.row_at_index(idx as i32) {
-            update_row_label(&row, widgets.pw.name_row.text().as_str());
+        let s2 = state.borrow();
+        if let Some(p) = s2.config.profiles.get(idx) {
+            if let Some(row) = widgets.profile_listbox.row_at_index(idx as i32) {
+                update_row_label(&row, &p.name, p.multiplier, p.active_in_list().len());
+            }
         }
     }
 }
 
-/// Create a single profile row for the left-panel listbox.
-fn make_profile_row(name: &str, _index: usize) -> gtk::ListBoxRow {
+/// Create a profile sidebar row with name + multiplier badge + active_in count.
+fn make_profile_row(name: &str, multiplier: u32, active_count: usize) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
     let box_ = gtk::Box::new(Orientation::Horizontal, 8);
     box_.set_margin_start(8);
@@ -927,48 +930,112 @@ fn make_profile_row(name: &str, _index: usize) -> gtk::ListBoxRow {
     icon.set_pixel_size(20);
     box_.append(&icon);
 
+    let vbox = gtk::Box::new(Orientation::Vertical, 2);
     let label = gtk::Label::new(Some(name));
     label.set_halign(Align::Start);
     label.set_hexpand(true);
     label.set_xalign(0.0);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    box_.append(&label);
+    vbox.append(&label);
+
+    let subtitle = gtk::Label::new(Some(&format!(
+        "{}x FG  {}  {}",
+        multiplier,
+        if active_count == 0 { "no targets" } else { "targets" },
+        active_count,
+    )));
+    subtitle.add_css_class("dim-label");
+    subtitle.add_css_class("caption");
+    subtitle.set_halign(Align::Start);
+    subtitle.set_xalign(0.0);
+    vbox.append(&subtitle);
+
+    box_.append(&vbox);
+
+    let badge = gtk::Label::new(Some(&format!("{}x", multiplier)));
+    badge.add_css_class("tag");
+    badge.add_css_class("accent");
+    badge.set_valign(Align::Center);
+    box_.append(&badge);
 
     row.set_child(Some(&box_));
     row
 }
 
-/// Remove all children from the listbox and repopulate from state.
 fn rebuild_listbox(listbox: &gtk::ListBox, state: &Rc<RefCell<AppState>>) {
-    // Remove all children
     while let Some(child) = listbox.first_child() {
         listbox.remove(&child);
     }
-    // Re-add all profiles
     let s = state.borrow();
     for (i, p) in s.config.profiles.iter().enumerate() {
-        let row = make_profile_row(&p.name, i);
+        let row = make_profile_row(&p.name, p.multiplier, p.active_in_list().len());
         listbox.append(&row);
+        let _ = i; // suppress unused warning
     }
 }
 
-/// Update the text label inside an existing listbox row.
-fn update_row_label(row: &gtk::ListBoxRow, name: &str) {
+fn update_row_label(row: &gtk::ListBoxRow, name: &str, multiplier: u32, active_count: usize) {
     let child = row.child();
-    if let Some(box_) = child.and_then(|c| c.downcast::<gtk::Box>().ok()) {
-        // The label is the second child (after the icon)
-        let mut found = false;
-        let mut child = box_.first_child();
-        while let Some(c) = child {
-            if let Ok(label) = c.clone().downcast::<gtk::Label>() {
+    let Some(box_) = child.and_then(|c| c.downcast::<gtk::Box>().ok()) else {
+        return;
+    };
+
+    // The structure is: icon, vbox(label, subtitle), badge
+    let mut iter = box_.first_child();
+    while let Some(c) = iter {
+        if let Ok(vbox) = c.clone().downcast::<gtk::Box>() {
+            let fc = vbox.first_child();
+            if let Some(label) = fc.clone().and_then(|l| l.downcast::<gtk::Label>().ok()) {
                 label.set_text(name);
-                found = true;
-                break;
             }
-            child = c.next_sibling();
+            if let Some(fc2) = fc.as_ref().and_then(|l| l.next_sibling()) {
+                if let Ok(sub) = fc2.clone().downcast::<gtk::Label>() {
+                    sub.set_text(&format!(
+                        "{}x FG  {}  {}",
+                        multiplier,
+                        if active_count == 0 {
+                            "no targets"
+                        } else {
+                            "targets"
+                        },
+                        active_count,
+                    ));
+                }
+            }
         }
-        if !found {
-            // Fallback: just set the row's accessible description
+        if let Ok(badge) = c.clone().downcast::<gtk::Label>() {
+            let text = badge.text();
+            if text.ends_with('x') && text.len() <= 3 {
+                badge.set_text(&format!("{}x", multiplier));
+            }
         }
+        iter = c.next_sibling();
+    }
+}
+
+/// Check if Proton compatibility is set up.
+fn check_proton_status(label: &gtk::Label) {
+    let proton_lib = std::path::Path::new(
+        &std::env::var("HOME").unwrap_or_default(),
+    )
+    .join(".local/share/Steam/steamapps/common/Proton - Experimental/files/lib/x86_64-linux-gnu/liblsfg-vk.so");
+
+    let user_layer = std::path::Path::new(
+        &std::env::var("HOME").unwrap_or_default(),
+    )
+    .join(".local/share/vulkan/implicit_layer.d/VkLayer_LS_frame_generation.json");
+
+    if proton_lib.exists() && user_layer.exists() {
+        label.set_text("Ready");
+        label.add_css_class("success");
+    } else if !proton_lib.exists() && !user_layer.exists() {
+        label.set_text("Not set up (native games OK)");
+        label.add_css_class("dim-label");
+    } else {
+        let missing = if !proton_lib.exists() { ".so " } else { "" }
+            .to_string()
+            + if !user_layer.exists() { "JSON" } else { "" };
+        label.set_text(&format!("Incomplete: missing {}", missing.trim()));
+        label.add_css_class("warning");
     }
 }
