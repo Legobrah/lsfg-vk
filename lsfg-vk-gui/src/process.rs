@@ -903,8 +903,7 @@ pub fn read_metrics() -> Option<Metrics> {
             if let Ok(metrics) = serde_json::from_str::<Metrics>(&content) {
                 return Some(metrics);
             }
-            // Try simpler parse for future format
-            let _ = content; // file exists but unreadable format
+            // File exists but format is unrecognized; try next path
         }
     }
     None

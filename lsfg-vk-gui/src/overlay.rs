@@ -308,7 +308,11 @@ fn refresh_inline(
     } else {
         let names: Vec<&str> = matches.iter().map(|m| m.profile_name.as_str()).collect();
         let unique: std::collections::BTreeSet<&str> = names.into_iter().collect();
-        active_label.set_text(&format!("Active: {} profiles", unique.len()));
+        active_label.set_text(&format!(
+            "Active: {} profile{}",
+            unique.len(),
+            if unique.len() == 1 { "" } else { "s" }
+        ));
         active_label.add_css_class("success");
 
         // Show quick FPS from metrics if available

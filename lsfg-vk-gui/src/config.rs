@@ -102,7 +102,9 @@ impl GameConf {
 
     /// Set active_in from a list of strings.
     pub fn set_active_in(&mut self, list: Vec<String>) {
-        if list.len() == 1 {
+        if list.is_empty() {
+            self.active_in = toml::Value::Array(vec![]);
+        } else if list.len() == 1 {
             self.active_in = toml::Value::String(list.into_iter().next().unwrap());
         } else {
             self.active_in =

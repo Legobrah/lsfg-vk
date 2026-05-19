@@ -151,6 +151,19 @@ fn build_ui(app: &Application) {
     menu_model.append(Some("Import Profiles..."), Some("win.import"));
     menu_model.append(Some("Setup Proton Layer"), Some("win.setup-proton"));
 
+    // Shortcuts section with accelerator hints
+    let shortcuts_section = gio::Menu::new();
+    let save_item = gio::MenuItem::new(Some("Save"), Some("win.save"));
+    save_item.set_attribute_value("accel", Some(&gtk::glib::Variant::from("<Control>s")));
+    shortcuts_section.append_item(&save_item);
+    let new_item = gio::MenuItem::new(Some("New Profile"), Some("win.new-profile"));
+    new_item.set_attribute_value("accel", Some(&gtk::glib::Variant::from("<Control>n")));
+    shortcuts_section.append_item(&new_item);
+    let search_item = gio::MenuItem::new(Some("Search Profiles"), Some("win.focus-search"));
+    search_item.set_attribute_value("accel", Some(&gtk::glib::Variant::from("<Control>f")));
+    shortcuts_section.append_item(&search_item);
+    menu_model.append_section(None, &shortcuts_section);
+
     // About section in menu
     let about_section = gio::Menu::new();
     about_section.append(Some("About lsfg-vk GUI"), Some("win.about"));
@@ -373,8 +386,9 @@ fn build_ui(app: &Application) {
         .build();
     let proton_status = gtk::Label::new(Some("Checking..."));
     proton_status.set_valign(Align::Center);
+    proton_status.add_css_class("dim-label");
     proton_row.add_suffix(&proton_status);
-    check_proton_status(&proton_status);
+    check_proton_status_async(&proton_status);
 
     // Action buttons
     let action_box = gtk::Box::new(Orientation::Horizontal, 8);
@@ -515,6 +529,7 @@ fn build_ui(app: &Application) {
             let idx = s.config.profiles.len() - 1;
             s.config.profiles[idx].name = name.clone();
             s.dirty = true;
+            s.last_dirty_time = Some(std::time::Instant::now());
             drop(s);
 
             let row = make_profile_row(&name, 2, 0);
@@ -542,15 +557,13 @@ fn build_ui(app: &Application) {
                     s.config.profiles.push(dup);
                     s.dirty = true;
                     s.last_dirty_time = Some(std::time::Instant::now());
+                    let last_idx = s.config.profiles.len() - 1;
+                    let row_name = s.config.profiles[last_idx].name.clone();
+                    let row_mult = s.config.profiles[last_idx].multiplier;
+                    let row_targets = s.config.profiles[last_idx].active_in_list().len();
                     drop(s);
 
-                    let last_idx = state.borrow().config.profiles.len() - 1;
-                    let p = state.borrow().config.profiles[last_idx].clone();
-                    let row = make_profile_row(
-                        &p.name,
-                        p.multiplier,
-                        p.active_in_list().len(),
-                    );
+                    let row = make_profile_row(&row_name, row_mult, row_targets);
                     widgets.profile_listbox.append(&row);
                     widgets.profile_listbox.select_row(Some(&row));
                     load_profile_into_ui(&state, &widgets, &loading);
@@ -854,9 +867,10 @@ fn build_ui(app: &Application) {
                     return;
                 }
                 let active = fp16_ref.is_active();
-                state_c.borrow_mut().config.global.allow_fp16 = active;
-                state_c.borrow_mut().dirty = true;
-                state_c.borrow_mut().last_dirty_time = Some(std::time::Instant::now());
+                let mut s = state_c.borrow_mut();
+                s.config.global.allow_fp16 = active;
+                s.dirty = true;
+                s.last_dirty_time = Some(std::time::Instant::now());
             }
         ));
     }
@@ -878,9 +892,10 @@ fn build_ui(app: &Application) {
                     return;
                 }
                 let active = enabled_ref.is_active();
-                state_c.borrow_mut().config.global.enabled = active;
-                state_c.borrow_mut().dirty = true;
-                state_c.borrow_mut().last_dirty_time = Some(std::time::Instant::now());
+                let mut s = state_c.borrow_mut();
+                s.config.global.enabled = active;
+                s.dirty = true;
+                s.last_dirty_time = Some(std::time::Instant::now());
             }
         ));
     }
@@ -1080,12 +1095,40 @@ fn build_ui(app: &Application) {
     }
     window.add_action(&about_action);
 
+    // Menu shortcut actions (triggered from the keyboard shortcuts section)
+    {
+        let save_requested_c = save_requested.clone();
+        let save_menu_action = gio::SimpleAction::new("save", None);
+        save_menu_action.connect_activate(move |_, _| {
+            save_requested_c.set(true);
+        });
+        window.add_action(&save_menu_action);
+    }
+    {
+        let new_profile_requested_c = new_profile_requested.clone();
+        let new_menu_action = gio::SimpleAction::new("new-profile", None);
+        new_menu_action.connect_activate(move |_, _| {
+            new_profile_requested_c.set(true);
+        });
+        window.add_action(&new_menu_action);
+    }
+    {
+        let search_ref = profile_search.clone();
+        let focus_search_action = gio::SimpleAction::new("focus-search", None);
+        focus_search_action.connect_activate(move |_, _| {
+            search_ref.grab_focus();
+        });
+        window.add_action(&focus_search_action);
+    }
+
     // --- Profile search filter ---
     {
         let listbox = widgets.profile_listbox.clone();
+        let state_ref = state.clone();
         profile_search.connect_changed(move |search| {
             let query = search.text().to_lowercase();
             let n = listbox.observe_children().n_items();
+            let s = state_ref.borrow();
             for i in 0..n {
                 if let Some(row) = listbox.row_at_index(i as i32) {
                     let visible = if query.is_empty() {
@@ -1093,6 +1136,11 @@ fn build_ui(app: &Application) {
                     } else if let Some(child) = row.child() {
                         // Walk into the hbox -> find the vbox (Box child) -> first label
                         let mut label_text = String::new();
+                        // Also check active_in executables for this profile index
+                        let mut exe_text = String::new();
+                        if let Some(profile) = s.config.profiles.get(i as usize) {
+                            exe_text = profile.active_in_list().join(" ").to_lowercase();
+                        }
                         if let Ok(hbox) = child.clone().downcast::<gtk::Box>() {
                             let mut iter = hbox.first_child();
                             while let Some(c) = iter {
@@ -1107,7 +1155,7 @@ fn build_ui(app: &Application) {
                                 iter = c.next_sibling();
                             }
                         }
-                        label_text.contains(&query)
+                        label_text.contains(&query) || exe_text.contains(&query)
                     } else {
                         true
                     };
@@ -1348,6 +1396,7 @@ fn save_profile_from_ui(state: &Rc<RefCell<AppState>>, widgets: &Rc<AppWidgets>)
     profile.target_fps = target_fps;
     profile.gpu = gpu_name;
     s.dirty = true;
+    s.last_dirty_time = Some(std::time::Instant::now());
 
     drop(s);
 
@@ -1397,10 +1446,13 @@ fn make_profile_row(name: &str, multiplier: u32, active_count: usize) -> gtk::Li
     vbox.append(&label);
 
     let subtitle = gtk::Label::new(Some(&format!(
-        "{}x FG  {}  {}",
+        "{}x FG  {}",
         multiplier,
-        if active_count == 0 { "no targets" } else { "targets" },
-        active_count,
+        if active_count == 0 {
+            "no targets".to_string()
+        } else {
+            format!("{} target{}", active_count, if active_count == 1 { "" } else { "s" })
+        },
     )));
     subtitle.add_css_class("dim-label");
     subtitle.add_css_class("caption");
@@ -1437,21 +1489,20 @@ fn update_row_label(row: &gtk::ListBoxRow, name: &str, multiplier: u32, active_c
             if let Some(fc2) = fc.as_ref().and_then(|l| l.next_sibling()) {
                 if let Ok(sub) = fc2.clone().downcast::<gtk::Label>() {
                     sub.set_text(&format!(
-                        "{}x FG  {}  {}",
+                        "{}x FG  {}",
                         multiplier,
                         if active_count == 0 {
-                            "no targets"
+                            "no targets".to_string()
                         } else {
-                            "targets"
+                            format!("{} target{}", active_count, if active_count == 1 { "" } else { "s" })
                         },
-                        active_count,
                     ));
                 }
             }
         }
         if let Ok(badge) = c.clone().downcast::<gtk::Label>() {
-            let text = badge.text();
-            if text.ends_with('x') && text.len() <= 3 {
+            // Only update the multiplier badge (direct child of hbox, not inside vbox)
+            if badge.has_css_class("tag") {
                 badge.set_text(&format!("{}x", multiplier));
             }
         }
@@ -1459,29 +1510,47 @@ fn update_row_label(row: &gtk::ListBoxRow, name: &str, multiplier: u32, active_c
     }
 }
 
-/// Check if Proton compatibility is set up.
-fn check_proton_status(label: &gtk::Label) {
-    let proton_lib = std::path::Path::new(
-        &std::env::var("HOME").unwrap_or_default(),
-    )
-    .join(".local/share/Steam/steamapps/common/Proton - Experimental/files/lib/x86_64-linux-gnu/liblsfg-vk.so");
-
-    let user_layer = std::path::Path::new(
-        &std::env::var("HOME").unwrap_or_default(),
-    )
-    .join(".local/share/vulkan/implicit_layer.d/VkLayer_LS_frame_generation.json");
-
-    if proton_lib.exists() && user_layer.exists() {
-        label.set_text("Ready");
-        label.add_css_class("success");
-    } else if !proton_lib.exists() && !user_layer.exists() {
-        label.set_text("Not set up (native games OK)");
-        label.add_css_class("dim-label");
-    } else {
-        let missing = if !proton_lib.exists() { ".so " } else { "" }
-            .to_string()
-            + if !user_layer.exists() { "JSON" } else { "" };
-        label.set_text(&format!("Incomplete: missing {}", missing.trim()));
-        label.add_css_class("warning");
-    }
+/// Check if Proton compatibility is set up (async — offloads filesystem checks
+/// to a background thread and marshals the result back to the GTK main loop).
+fn check_proton_status_async(label: &gtk::Label) {
+    let label = label.clone();
+    // Do the filesystem checks off the main thread, return result as plain data
+    let result = std::thread::spawn(|| {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let proton_lib = std::path::Path::new(&home).join(
+            ".local/share/Steam/steamapps/common/Proton - Experimental/files/lib/x86_64-linux-gnu/liblsfg-vk.so",
+        );
+        let user_layer = std::path::Path::new(&home)
+            .join(".local/share/vulkan/implicit_layer.d/VkLayer_LS_frame_generation.json");
+        (proton_lib.exists(), user_layer.exists())
+    });
+    // Wrap in Option so we can .take() once from the FnMut closure
+    let result = Rc::new(std::cell::RefCell::new(Some(result)));
+    gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        let handle = result.borrow_mut().take();
+        if let Some(handle) = handle {
+            if !handle.is_finished() {
+                // Put it back and try again
+                *result.borrow_mut() = Some(handle);
+                return gtk::glib::ControlFlow::Continue;
+            }
+            let (proton_exists, layer_exists) = handle.join().unwrap_or((false, false));
+            label.remove_css_class("dim-label");
+            if proton_exists && layer_exists {
+                label.set_text("Ready");
+                label.add_css_class("success");
+            } else if !proton_exists && !layer_exists {
+                label.set_text("Not set up (native games OK)");
+                label.add_css_class("dim-label");
+            } else {
+                let missing = if !proton_exists { ".so " } else { "" }.to_string()
+                    + if !layer_exists { "JSON" } else { "" };
+                label.set_text(&format!("Incomplete: missing {}", missing.trim()));
+                label.add_css_class("warning");
+            }
+            gtk::glib::ControlFlow::Break
+        } else {
+            gtk::glib::ControlFlow::Break
+        }
+    });
 }
