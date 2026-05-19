@@ -132,10 +132,35 @@ fn refresh_hud(metrics_label: &gtk::Label, layer_label: &gtk::Label) {
             let uptime = m.uptime_secs as u32;
 
             // Build latency comparison section
-            let latency_section = if m.native_latency_ms > 0.0 {
-                let native_lat = m.native_latency_ms;
-                let fg_lat = if m.fg_latency_ms > 0.0 { m.fg_latency_ms } else { ft };
-                let overhead = m.latency_overhead_ms;
+            // Native latency = time between real frames (what latency would be without FG)
+            // FG latency = actual measured frame time (includes FG pipeline buffering)
+            // Overhead = the extra delay FG adds
+            let native_lat = if m.native_latency_ms > 0.0 {
+                m.native_latency_ms
+            } else if real_fps > 0.0 {
+                // Fallback: compute from real FPS if layer doesn't provide it yet
+                1000.0 / real_fps
+            } else {
+                0.0
+            };
+
+            let fg_lat = if m.fg_latency_ms > 0.0 {
+                m.fg_latency_ms
+            } else {
+                // Fallback: use measured frame time as FG latency
+                ft
+            };
+
+            let overhead = if m.latency_overhead_ms > 0.0 {
+                m.latency_overhead_ms
+            } else if native_lat > 0.0 && fg_lat > native_lat {
+                // Fallback: compute from difference
+                fg_lat - native_lat
+            } else {
+                0.0
+            };
+
+            let latency_section = if native_lat > 0.0 {
                 if overhead > 0.0 {
                     format!(
                         "{:<12}{:.1} ms (native)\n\
@@ -159,7 +184,6 @@ fn refresh_hud(metrics_label: &gtk::Label, layer_label: &gtk::Label) {
                     )
                 }
             } else {
-                // Fallback for old layer version without latency data
                 format!("{:<12}{:.1} ms", "Frame Time:", ft)
             };
 
@@ -349,10 +373,20 @@ fn refresh_inline(
         // Show quick FPS and latency overhead from metrics if available
         if let Some(m) = process::read_metrics() {
             let mut text = format!("{:.0}fps -> {:.0}fps", m.real_fps, m.output_fps);
-            if m.latency_overhead_ms > 0.0 {
+            // Compute latency overhead (prefer layer-provided, fallback to computed)
+            let overhead = if m.latency_overhead_ms > 0.0 {
+                m.latency_overhead_ms
+            } else if m.real_fps > 0.0 {
+                let native_lat = 1000.0 / m.real_fps;
+                let fg_lat = if m.fg_latency_ms > 0.0 { m.fg_latency_ms } else { m.frame_time_ms };
+                if fg_lat > native_lat { fg_lat - native_lat } else { 0.0 }
+            } else {
+                0.0
+            };
+            if overhead > 0.0 {
                 text = format!(
                     "{:.0}fps -> {:.0}fps  +{:.0}ms lat",
-                    m.real_fps, m.output_fps, m.latency_overhead_ms
+                    m.real_fps, m.output_fps, overhead
                 );
             }
             metrics_label.set_text(&text);
