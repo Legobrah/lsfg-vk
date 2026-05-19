@@ -59,6 +59,7 @@ struct AppState {
     config: config::Config,
     selected_profile: Option<usize>,
     dirty: bool,
+    last_dirty_time: Option<std::time::Instant>,
 }
 
 struct ProfileWidgets {
@@ -77,6 +78,7 @@ struct ProfileWidgets {
 struct AppWidgets {
     profile_listbox: gtk::ListBox,
     profile_group: adw::PreferencesGroup,
+    custom_group: adw::PreferencesGroup,
     status_label: gtk::Label,
     window: adw::ApplicationWindow,
     pw: ProfileWidgets,
@@ -90,6 +92,7 @@ fn build_ui(app: &Application) {
         }),
         selected_profile: None,
         dirty: false,
+        last_dirty_time: None,
     }));
 
     let loading = Rc::new(Cell::new(false));
@@ -105,16 +108,12 @@ fn build_ui(app: &Application) {
     let shortcuts = gtk::ShortcutController::new();
     shortcuts.set_scope(gtk::ShortcutScope::Global);
 
-    // Ctrl+S = Save
+    // Ctrl+S = Save (flag-based, actual save done in periodic callback below)
+    let save_requested = Rc::new(Cell::new(false));
     let save_action = gtk::CallbackAction::new({
-        let state = state.clone();
+        let save_requested = save_requested.clone();
         move |_widget, _| {
-            // Trigger save
-            let s = state.borrow();
-            if let Ok(()) = config::save_config(&s.config) {
-                drop(s);
-                state.borrow_mut().dirty = false;
-            }
+            save_requested.set(true);
             gtk::glib::Propagation::Proceed
         }
     });
@@ -317,6 +316,7 @@ fn build_ui(app: &Application) {
             if let Some(profile) = s.config.profiles.get_mut(idx) {
                 profile.set_active_in(entries);
                 s.dirty = true;
+                s.last_dirty_time = Some(std::time::Instant::now());
             }
         }
     }));
@@ -353,12 +353,6 @@ fn build_ui(app: &Application) {
         gpu_model.append(g);
     }
     gpu_row.set_model(Some(&gpu_model));
-
-    let pacing_row = adw::ComboRow::builder()
-        .title("Pacing Mode")
-        .subtitle("How frames are presented")
-        .model(&gtk::StringList::new(&["None"]))
-        .build();
 
     // Custom features
     let custom_group = adw::PreferencesGroup::builder()
@@ -403,7 +397,6 @@ fn build_ui(app: &Application) {
     profile_group.add(&flow_row);
     profile_group.add(&perf_row);
     profile_group.add(&gpu_row);
-    profile_group.add(&pacing_row);
 
     settings_box.append(&global_group);
     settings_box.append(&profile_group);
@@ -455,6 +448,7 @@ fn build_ui(app: &Application) {
     let widgets = Rc::new(AppWidgets {
         profile_listbox,
         profile_group,
+        custom_group,
         status_label,
         window: window.clone(),
         pw,
@@ -547,6 +541,7 @@ fn build_ui(app: &Application) {
                     dup.name = format!("{} (copy)", dup.name);
                     s.config.profiles.push(dup);
                     s.dirty = true;
+                    s.last_dirty_time = Some(std::time::Instant::now());
                     drop(s);
 
                     let last_idx = state.borrow().config.profiles.len() - 1;
@@ -589,11 +584,9 @@ fn build_ui(app: &Application) {
                 gtk::DialogFlags::MODAL,
                 gtk::MessageType::Question,
                 gtk::ButtonsType::YesNo,
-                format!("Delete profile \"{profile_name}\"?"),
-            );
-            dialog.set_property(
-                "secondary-text",
-                "This will remove the profile. Save to apply.",
+                &format!(
+                    "Delete profile \"{profile_name}\"?\n\nThis will remove the profile. Save to apply."
+                ),
             );
             let state_c = state.clone();
             let widgets_c = widgets.clone();
@@ -606,10 +599,11 @@ fn build_ui(app: &Application) {
                             if idx < s.config.profiles.len() {
                                 s.config.profiles.remove(idx);
                                 s.dirty = true;
+                                s.last_dirty_time = Some(std::time::Instant::now());
                             }
                         }
                     }
-                    rebuild_listbox(&widgets_c.profile_listbox, &state_c);
+                    rebuild_profile_list(&state_c, &widgets_c);
                     if let Some(row) = widgets_c.profile_listbox.row_at_index(0) {
                         widgets_c.profile_listbox.select_row(Some(&row));
                     } else {
@@ -769,6 +763,7 @@ fn build_ui(app: &Application) {
                 if idx > 0 {
                     s.config.profiles.swap(idx, idx - 1);
                     s.dirty = true;
+                    s.last_dirty_time = Some(std::time::Instant::now());
                     let new_idx = idx - 1;
                     s.selected_profile = Some(new_idx);
                     drop(s);
@@ -797,6 +792,7 @@ fn build_ui(app: &Application) {
                 if idx + 1 < s.config.profiles.len() {
                     s.config.profiles.swap(idx, idx + 1);
                     s.dirty = true;
+                    s.last_dirty_time = Some(std::time::Instant::now());
                     let new_idx = idx + 1;
                     s.selected_profile = Some(new_idx);
                     drop(s);
@@ -835,6 +831,7 @@ fn build_ui(app: &Application) {
                     s.config.global.dll = Some(text);
                 }
                 s.dirty = true;
+                s.last_dirty_time = Some(std::time::Instant::now());
                 drop(s);
             }
         ));
@@ -859,6 +856,7 @@ fn build_ui(app: &Application) {
                 let active = fp16_ref.is_active();
                 state_c.borrow_mut().config.global.allow_fp16 = active;
                 state_c.borrow_mut().dirty = true;
+                state_c.borrow_mut().last_dirty_time = Some(std::time::Instant::now());
             }
         ));
     }
@@ -882,6 +880,7 @@ fn build_ui(app: &Application) {
                 let active = enabled_ref.is_active();
                 state_c.borrow_mut().config.global.enabled = active;
                 state_c.borrow_mut().dirty = true;
+                state_c.borrow_mut().last_dirty_time = Some(std::time::Instant::now());
             }
         ));
     }
@@ -934,46 +933,6 @@ fn build_ui(app: &Application) {
                         widgets_c.status_label.set_text(&format!("Save failed: {e}"));
                         widgets_c.status_label.add_css_class("error");
                     }
-                }
-            }
-        ));
-    }
-
-    // Confirm before quit if dirty
-    {
-        let state_c = state.clone();
-        let widgets_c = widgets.clone();
-        window.connect_close_request(clone!(
-            #[strong]
-            state_c,
-            #[strong]
-            widgets_c,
-            move |_| {
-                if state_c.borrow().dirty {
-                    let dialog = gtk::MessageDialog::new(
-                        Some(&widgets_c.window),
-                        gtk::DialogFlags::MODAL,
-                        gtk::MessageType::Question,
-                        gtk::ButtonsType::YesNo,
-                        "Unsaved changes",
-                    );
-                    dialog.set_property(
-                        "secondary-text",
-                        "You have unsaved changes. Discard and quit?",
-                    );
-                    let state_cc = state_c.clone();
-                    let widgets_cc = widgets_c.clone();
-                    dialog.connect_response(move |dialog, resp| {
-                        if resp == gtk::ResponseType::Yes {
-                            state_cc.borrow_mut().dirty = false;
-                            widgets_cc.window.close();
-                        }
-                        dialog.close();
-                    });
-                    dialog.show();
-                    gtk::glib::Propagation::Stop
-                } else {
-                    gtk::glib::Propagation::Proceed
                 }
             }
         ));
@@ -1057,8 +1016,9 @@ fn build_ui(app: &Application) {
                                 let mut s = state_c2.borrow_mut();
                                 s.config.profiles.extend(imported);
                                 s.dirty = true;
+                                s.last_dirty_time = Some(std::time::Instant::now());
                                 drop(s);
-                                rebuild_listbox(&widgets_c2.profile_listbox, &state_c2);
+                                rebuild_profile_list(&state_c2, &widgets_c2);
                                 helpers::show_toast(
                                     &toast_overlay_c,
                                     &format!("Imported {count} profiles"),
@@ -1108,7 +1068,7 @@ fn build_ui(app: &Application) {
             let dialog = adw::AboutWindow::builder()
                 .application_name("lsfg-vk GUI")
                 .application_icon("applications-games-symbolic")
-                .version("1.2.0")
+                .version(env!("CARGO_PKG_VERSION"))
                 .comments("A GTK4/libadwaita GUI for configuring lsfg-vk frame generation")
                 .website("https://github.com/Legobrah/lsfg-vk")
                 .license_type(gtk::License::MitX11)
@@ -1131,13 +1091,14 @@ fn build_ui(app: &Application) {
                     let visible = if query.is_empty() {
                         true
                     } else if let Some(child) = row.child() {
-                        // Walk into the hbox -> vbox -> label to get text
+                        // Walk into the hbox -> find the vbox (Box child) -> first label
                         let mut label_text = String::new();
                         if let Ok(hbox) = child.clone().downcast::<gtk::Box>() {
                             let mut iter = hbox.first_child();
                             while let Some(c) = iter {
-                                if let Ok(vbox) = c.clone().downcast::<gtk::Box>() {
-                                    if let Some(fc) = vbox.first_child() {
+                                // The row structure is: Image(icon), Box(vbox)[Label(name), Label(subtitle)], Label(badge)
+                                if c.clone().downcast::<gtk::Box>().is_ok() {
+                                    if let Some(fc) = c.first_child() {
                                         if let Ok(lbl) = fc.downcast::<gtk::Label>() {
                                             label_text = lbl.text().to_lowercase();
                                         }
@@ -1169,22 +1130,60 @@ fn build_ui(app: &Application) {
         ));
     }
 
-    // --- Auto-save: save after 5s idle when dirty ---
+    // --- Auto-save (debounced): save after 5s of no changes when dirty ---
     {
         let state_c = state.clone();
         let toast_overlay_c = toast_overlay.clone();
-        gtk::glib::timeout_add_seconds_local(5, move || {
-            let should_save = state_c.borrow().dirty;
-            if should_save {
+        let widgets_c = widgets.clone();
+        gtk::glib::timeout_add_seconds_local(1, move || {
+            let s = state_c.borrow();
+            if s.dirty {
+                if let Some(last_dirty) = s.last_dirty_time {
+                    if last_dirty.elapsed() >= std::time::Duration::from_secs(5) {
+                        let config = s.config.clone();
+                        drop(s);
+                        match config::save_config(&config) {
+                            Ok(()) => {
+                                state_c.borrow_mut().dirty = false;
+                                state_c.borrow_mut().last_dirty_time = None;
+                                helpers::show_toast(&toast_overlay_c, "Auto-saved", 2);
+                                update_dirty_title(&state_c, &widgets_c);
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                }
+            }
+            gtk::glib::ControlFlow::Continue
+        });
+    }
+
+    // --- Ctrl+S periodic check ---
+    {
+        let save_requested = save_requested.clone();
+        let state_c = state.clone();
+        let widgets_c = widgets.clone();
+        let toast_overlay_c = toast_overlay.clone();
+        gtk::glib::timeout_add_seconds_local(1, move || {
+            if save_requested.get() {
+                save_requested.set(false);
                 let s = state_c.borrow();
                 match config::save_config(&s.config) {
                     Ok(()) => {
                         drop(s);
                         state_c.borrow_mut().dirty = false;
-                        helpers::show_toast(&toast_overlay_c, "Auto-saved", 2);
+                        state_c.borrow_mut().last_dirty_time = None;
+                        update_dirty_title(&state_c, &widgets_c);
+                        helpers::show_toast(&toast_overlay_c, "Saved", 2);
+                        widgets_c.status_label.set_text("Configuration saved");
+                        widgets_c.status_label.remove_css_class("error");
                     }
-                    Err(_) => {
+                    Err(e) => {
                         drop(s);
+                        widgets_c
+                            .status_label
+                            .set_text(&format!("Save failed: {e}"));
+                        widgets_c.status_label.add_css_class("error");
                     }
                 }
             }
@@ -1208,6 +1207,7 @@ fn build_ui(app: &Application) {
                 let idx = s.config.profiles.len() - 1;
                 s.config.profiles[idx].name = name.clone();
                 s.dirty = true;
+                s.last_dirty_time = Some(std::time::Instant::now());
                 drop(s);
 
                 let row = make_profile_row(&name, 2, 0);
@@ -1272,14 +1272,16 @@ fn load_profile_into_ui(
 
     let s = state.borrow();
     let pw = &widgets.pw;
-
     if let Some(idx) = s.selected_profile {
         if let Some(profile) = s.config.profiles.get(idx) {
+            widgets.profile_group.set_sensitive(true);
+            widgets.custom_group.set_sensitive(true);
             pw.name_row.set_text(&profile.name);
             pw.multiplier_row.set_value(profile.multiplier as f64);
             pw.flow_row.set_value(profile.flow_scale as f64);
             pw.perf_switch.set_active(profile.performance_mode);
-            pw.target_fps_row.set_value(profile.target_fps.unwrap_or(0) as f64);
+            pw.target_fps_row
+                .set_value(profile.target_fps.unwrap_or(0) as f64);
 
             // GPU
             let mut gpu_selected: u32 = 0;
@@ -1302,6 +1304,8 @@ fn load_profile_into_ui(
             widgets.profile_group.set_description(None);
         }
     } else {
+        widgets.profile_group.set_sensitive(false);
+        widgets.custom_group.set_sensitive(false);
         pw.name_row.set_text("");
         pw.multiplier_row.set_value(2.0);
         pw.flow_row.set_value(1.0);
@@ -1414,18 +1418,6 @@ fn make_profile_row(name: &str, multiplier: u32, active_count: usize) -> gtk::Li
 
     row.set_child(Some(&box_));
     row
-}
-
-fn rebuild_listbox(listbox: &gtk::ListBox, state: &Rc<RefCell<AppState>>) {
-    while let Some(child) = listbox.first_child() {
-        listbox.remove(&child);
-    }
-    let s = state.borrow();
-    for (i, p) in s.config.profiles.iter().enumerate() {
-        let row = make_profile_row(&p.name, p.multiplier, p.active_in_list().len());
-        listbox.append(&row);
-        let _ = i; // suppress unused warning
-    }
 }
 
 fn update_row_label(row: &gtk::ListBoxRow, name: &str, multiplier: u32, active_count: usize) {
