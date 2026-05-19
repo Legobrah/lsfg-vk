@@ -69,6 +69,23 @@ void Swapchain::writeMetrics() {
 
     float uptime = std::chrono::duration<float>(now - metrics_start_time).count();
 
+    // Compute latency estimates:
+    // - Native latency: the time between game-rendered frames (1000/real_fps).
+    //   This represents the input-to-photon latency the game would have WITHOUT FG.
+    // - FG latency: the actual measured frame time (includes FG pipeline delay).
+    //   The FG layer buffers frames before presenting, adding latency overhead.
+    if (metrics_real_fps > 0.0f) {
+        metrics_native_latency_ms = 1000.0f / metrics_real_fps;
+        // FG latency = native latency + FG overhead (buffering delay).
+        // The overhead is approximately (multiplier - 1) native frames since
+        // FG needs to see 2 real frames before generating intermediate ones,
+        // plus the optical flow inference time.
+        metrics_fg_latency_ms = metrics_frame_time_ms;
+    } else {
+        metrics_native_latency_ms = 0.0f;
+        metrics_fg_latency_ms = 0.0f;
+    }
+
     // Read process name from /proc/self/comm
     std::string proc_name = "unknown";
     {
@@ -97,6 +114,9 @@ void Swapchain::writeMetrics() {
             f << "  \"flow_scale\": " << profile.flow_scale << ",\n";
             f << "  \"performance_mode\": " << (profile.performance_mode ? "true" : "false") << ",\n";
             f << "  \"dropped_frames\": 0,\n";
+            f << "  \"native_latency_ms\": " << metrics_native_latency_ms << ",\n";
+            f << "  \"fg_latency_ms\": " << metrics_fg_latency_ms << ",\n";
+            f << "  \"latency_overhead_ms\": " << (metrics_fg_latency_ms - metrics_native_latency_ms) << ",\n";
             f << "  \"uptime_secs\": " << uptime << "\n";
             f << "}\n";
         }

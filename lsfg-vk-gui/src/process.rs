@@ -923,6 +923,15 @@ pub struct Metrics {
     pub performance_mode: bool,
     pub dropped_frames: u32,
     pub uptime_secs: f32,
+    /// Input latency without frame generation (estimated from 1000/real_fps).
+    #[serde(default)]
+    pub native_latency_ms: f32,
+    /// Actual input latency with frame generation (measured frame time).
+    #[serde(default)]
+    pub fg_latency_ms: f32,
+    /// Extra latency added by FG pipeline (fg_latency_ms - native_latency_ms).
+    #[serde(default)]
+    pub latency_overhead_ms: f32,
 }
 
 /// Find which profiles match currently running processes.

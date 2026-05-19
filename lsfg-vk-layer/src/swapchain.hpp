@@ -92,6 +92,8 @@ namespace lsfgvk::layer {
         size_t metrics_last_frame_count{0};
         float metrics_real_fps{0.0f};
         float metrics_frame_time_ms{0.0f};
+        float metrics_native_latency_ms{0.0f};
+        float metrics_fg_latency_ms{0.0f};
         void writeMetrics();
     };
 

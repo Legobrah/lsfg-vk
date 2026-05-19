@@ -19,7 +19,7 @@ pub struct OverlayState {
 pub fn create_overlay() -> OverlayState {
     let window = gtk::Window::new();
     window.set_title(Some("lsfg-vk HUD"));
-    window.set_default_size(260, 180);
+    window.set_default_size(280, 220);
     window.set_resizable(false);
 
     // Try to stay on top
@@ -131,11 +131,43 @@ fn refresh_hud(metrics_label: &gtk::Label, layer_label: &gtk::Label) {
             let ft = m.frame_time_ms;
             let uptime = m.uptime_secs as u32;
 
+            // Build latency comparison section
+            let latency_section = if m.native_latency_ms > 0.0 {
+                let native_lat = m.native_latency_ms;
+                let fg_lat = if m.fg_latency_ms > 0.0 { m.fg_latency_ms } else { ft };
+                let overhead = m.latency_overhead_ms;
+                if overhead > 0.0 {
+                    format!(
+                        "{:<12}{:.1} ms (native)\n\
+                         {:<12}{:.1} ms (with FG)\n\
+                         {:<12}+{:.1} ms overhead",
+                        "Native Lat:",
+                        native_lat,
+                        "FG Lat:",
+                        fg_lat,
+                        "Overhead:",
+                        overhead,
+                    )
+                } else {
+                    format!(
+                        "{:<12}{:.1} ms (native)\n\
+                         {:<12}{:.1} ms (with FG)",
+                        "Native Lat:",
+                        native_lat,
+                        "FG Lat:",
+                        fg_lat,
+                    )
+                }
+            } else {
+                // Fallback for old layer version without latency data
+                format!("{:<12}{:.1} ms", "Frame Time:", ft)
+            };
+
             let text = format!(
                 "{:<12}{}\n\
                  {:<12}{}x\n\
                  {:<12}{:.0} -> {:.0} fps\n\
-                 {:<12}{:.1} ms\n\
+                 {}\n\
                  {:<12}{}\n\
                  {:<12}{:.0} | {:.0} fps\n\
                  {:<12}{:.0}s",
@@ -146,8 +178,7 @@ fn refresh_hud(metrics_label: &gtk::Label, layer_label: &gtk::Label) {
                 "FPS:",
                 real_fps,
                 output_fps,
-                "Frame Time:",
-                ft,
+                latency_section,
                 "Profile:",
                 m.profile_name.as_deref().unwrap_or("?"),
                 "Real|Out:",
@@ -315,9 +346,16 @@ fn refresh_inline(
         ));
         active_label.add_css_class("success");
 
-        // Show quick FPS from metrics if available
+        // Show quick FPS and latency overhead from metrics if available
         if let Some(m) = process::read_metrics() {
-            metrics_label.set_text(&format!("{:.0}fps -> {:.0}fps", m.real_fps, m.output_fps));
+            let mut text = format!("{:.0}fps -> {:.0}fps", m.real_fps, m.output_fps);
+            if m.latency_overhead_ms > 0.0 {
+                text = format!(
+                    "{:.0}fps -> {:.0}fps  +{:.0}ms lat",
+                    m.real_fps, m.output_fps, m.latency_overhead_ms
+                );
+            }
+            metrics_label.set_text(&text);
             metrics_label.add_css_class("success");
         } else {
             metrics_label.remove_css_class("success");
