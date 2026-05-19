@@ -1,6 +1,6 @@
 [package]
 name = "lsfg-vk-gui"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 description = "A GTK4/libadwaita GUI for configuring lsfg-vk frame generation"
 

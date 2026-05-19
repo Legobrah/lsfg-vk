@@ -106,7 +106,6 @@ fn build_ui(app: &Application) {
     shortcuts.set_scope(gtk::ShortcutScope::Global);
 
     // Ctrl+S = Save
-    // Ctrl+S = Save
     let save_action = gtk::CallbackAction::new({
         let state = state.clone();
         move |_widget, _| {
@@ -152,6 +151,11 @@ fn build_ui(app: &Application) {
     menu_model.append(Some("Export Profiles..."), Some("win.export"));
     menu_model.append(Some("Import Profiles..."), Some("win.import"));
     menu_model.append(Some("Setup Proton Layer"), Some("win.setup-proton"));
+
+    // About section in menu
+    let about_section = gio::Menu::new();
+    about_section.append(Some("About lsfg-vk GUI"), Some("win.about"));
+    menu_model.append_section(None, &about_section);
     menu.set_menu_model(Some(&menu_model));
     header.pack_end(&menu);
 
@@ -171,6 +175,12 @@ fn build_ui(app: &Application) {
     let profile_label = gtk::Label::new(Some("Profiles"));
     profile_label.add_css_class("title-4");
     left_panel.append(&profile_label);
+
+    // Profile search/filter
+    let profile_search = gtk::SearchEntry::new();
+    profile_search.set_placeholder_text(Some("Filter profiles..."));
+    profile_search.set_hexpand(true);
+    left_panel.append(&profile_search);
 
     let profile_listbox = gtk::ListBox::new();
     profile_listbox.set_selection_mode(gtk::SelectionMode::Single);
@@ -207,9 +217,17 @@ fn build_ui(app: &Application) {
     let btn_delete = gtk::Button::with_label("Delete");
     btn_delete.add_css_class("destructive-action");
     btn_delete.set_hexpand(true);
+
+    let btn_up = gtk::Button::from_icon_name("go-up-symbolic");
+    btn_up.set_tooltip_text(Some("Move Up"));
+    let btn_down = gtk::Button::from_icon_name("go-down-symbolic");
+    btn_down.set_tooltip_text(Some("Move Down"));
+
     btn_box.append(&btn_add);
     btn_box.append(&btn_dup);
     btn_box.append(&btn_delete);
+    btn_box.append(&btn_up);
+    btn_box.append(&btn_down);
     left_panel.append(&btn_box);
 
     let separator = gtk::Separator::new(Orientation::Vertical);
@@ -257,6 +275,21 @@ fn build_ui(app: &Application) {
 
     global_group.add(&dll_row);
     global_group.add(&fp16_row);
+
+    // Global enable/disable toggle
+    let enabled_row = adw::ActionRow::builder()
+        .title("Enable Frame Generation Layer")
+        .subtitle("When disabled, the Vulkan layer will not load")
+        .build();
+    let enabled_switch = gtk::Switch::new();
+    enabled_switch.set_valign(Align::Center);
+    {
+        let s = state.borrow();
+        enabled_switch.set_active(s.config.global.enabled);
+    }
+    enabled_row.add_suffix(&enabled_switch);
+    enabled_row.set_activatable_widget(Some(&enabled_switch));
+    global_group.add(&enabled_row);
 
     // Profile Settings
     let profile_group = adw::PreferencesGroup::builder()
@@ -427,7 +460,8 @@ fn build_ui(app: &Application) {
         pw,
     });
 
-    // Add shortcuts controller to window
+    // Add shortcuts controller to window (clone for later Ctrl+F registration)
+    let shortcuts_ref = shortcuts.clone();
     window.add_controller(shortcuts);
 
     // --- Overlay window ---
@@ -721,6 +755,62 @@ fn build_ui(app: &Application) {
         ));
     }
 
+    // Move profile up
+    btn_up.connect_clicked(clone!(
+        #[strong]
+        state,
+        #[strong]
+        widgets,
+        #[strong]
+        loading,
+        move |_| {
+            let mut s = state.borrow_mut();
+            if let Some(idx) = s.selected_profile {
+                if idx > 0 {
+                    s.config.profiles.swap(idx, idx - 1);
+                    s.dirty = true;
+                    let new_idx = idx - 1;
+                    s.selected_profile = Some(new_idx);
+                    drop(s);
+                    rebuild_profile_list(&state, &widgets);
+                    if let Some(row) = widgets.profile_listbox.row_at_index(new_idx as i32) {
+                        widgets.profile_listbox.select_row(Some(&row));
+                    }
+                    load_profile_into_ui(&state, &widgets, &loading);
+                    update_dirty_title(&state, &widgets);
+                }
+            }
+        }
+    ));
+
+    // Move profile down
+    btn_down.connect_clicked(clone!(
+        #[strong]
+        state,
+        #[strong]
+        widgets,
+        #[strong]
+        loading,
+        move |_| {
+            let mut s = state.borrow_mut();
+            if let Some(idx) = s.selected_profile {
+                if idx + 1 < s.config.profiles.len() {
+                    s.config.profiles.swap(idx, idx + 1);
+                    s.dirty = true;
+                    let new_idx = idx + 1;
+                    s.selected_profile = Some(new_idx);
+                    drop(s);
+                    rebuild_profile_list(&state, &widgets);
+                    if let Some(row) = widgets.profile_listbox.row_at_index(new_idx as i32) {
+                        widgets.profile_listbox.select_row(Some(&row));
+                    }
+                    load_profile_into_ui(&state, &widgets, &loading);
+                    update_dirty_title(&state, &widgets);
+                }
+            }
+        }
+    ));
+
     // Global: DLL path
     {
         let state_c = state.clone();
@@ -768,6 +858,29 @@ fn build_ui(app: &Application) {
                 }
                 let active = fp16_ref.is_active();
                 state_c.borrow_mut().config.global.allow_fp16 = active;
+                state_c.borrow_mut().dirty = true;
+            }
+        ));
+    }
+
+    // Global: Enable/Disable
+    {
+        let state_c = state.clone();
+        let loading_c = loading.clone();
+        let enabled_ref = enabled_switch.clone();
+        enabled_switch.connect_active_notify(clone!(
+            #[strong]
+            state_c,
+            #[strong]
+            loading_c,
+            #[strong]
+            enabled_ref,
+            move |_| {
+                if loading_c.get() {
+                    return;
+                }
+                let active = enabled_ref.is_active();
+                state_c.borrow_mut().config.global.enabled = active;
                 state_c.borrow_mut().dirty = true;
             }
         ));
@@ -987,6 +1100,98 @@ fn build_ui(app: &Application) {
     window.add_action(&import_action);
     window.add_action(&setup_proton_action);
 
+    // About dialog
+    let about_action = gio::SimpleAction::new("about", None);
+    {
+        let window_c = window.clone();
+        about_action.connect_activate(move |_, _| {
+            let dialog = adw::AboutWindow::builder()
+                .application_name("lsfg-vk GUI")
+                .application_icon("applications-games-symbolic")
+                .version("1.2.0")
+                .comments("A GTK4/libadwaita GUI for configuring lsfg-vk frame generation")
+                .website("https://github.com/Legobrah/lsfg-vk")
+                .license_type(gtk::License::MitX11)
+                .developers(vec!["devind"])
+                .build();
+            dialog.set_transient_for(Some(&window_c));
+            dialog.present();
+        });
+    }
+    window.add_action(&about_action);
+
+    // --- Profile search filter ---
+    {
+        let listbox = widgets.profile_listbox.clone();
+        profile_search.connect_changed(move |search| {
+            let query = search.text().to_lowercase();
+            let n = listbox.observe_children().n_items();
+            for i in 0..n {
+                if let Some(row) = listbox.row_at_index(i as i32) {
+                    let visible = if query.is_empty() {
+                        true
+                    } else if let Some(child) = row.child() {
+                        // Walk into the hbox -> vbox -> label to get text
+                        let mut label_text = String::new();
+                        if let Ok(hbox) = child.clone().downcast::<gtk::Box>() {
+                            let mut iter = hbox.first_child();
+                            while let Some(c) = iter {
+                                if let Ok(vbox) = c.clone().downcast::<gtk::Box>() {
+                                    if let Some(fc) = vbox.first_child() {
+                                        if let Ok(lbl) = fc.downcast::<gtk::Label>() {
+                                            label_text = lbl.text().to_lowercase();
+                                        }
+                                    }
+                                }
+                                iter = c.next_sibling();
+                            }
+                        }
+                        label_text.contains(&query)
+                    } else {
+                        true
+                    };
+                    row.set_visible(visible);
+                }
+            }
+        });
+    }
+
+    // --- Ctrl+F = focus profile search ---
+    {
+        let search_ref = profile_search.clone();
+        let ctrl_f = gtk::CallbackAction::new(move |_widget, _| {
+            search_ref.grab_focus();
+            gtk::glib::Propagation::Proceed
+        });
+        shortcuts_ref.add_shortcut(gtk::Shortcut::new(
+            Some(gtk::ShortcutTrigger::parse_string("<Control>f").unwrap()),
+            Some(ctrl_f),
+        ));
+    }
+
+    // --- Auto-save: save after 5s idle when dirty ---
+    {
+        let state_c = state.clone();
+        let toast_overlay_c = toast_overlay.clone();
+        gtk::glib::timeout_add_seconds_local(5, move || {
+            let should_save = state_c.borrow().dirty;
+            if should_save {
+                let s = state_c.borrow();
+                match config::save_config(&s.config) {
+                    Ok(()) => {
+                        drop(s);
+                        state_c.borrow_mut().dirty = false;
+                        helpers::show_toast(&toast_overlay_c, "Auto-saved", 2);
+                    }
+                    Err(_) => {
+                        drop(s);
+                    }
+                }
+            }
+            gtk::glib::ControlFlow::Continue
+        });
+    }
+
     // --- Ctrl+N periodic check ---
     // Check if Ctrl+N was pressed and add a profile using a recurring idle source
     {
@@ -1012,6 +1217,35 @@ fn build_ui(app: &Application) {
                 update_dirty_title(&state_c, &widgets_c);
             }
             gtk::glib::ControlFlow::Continue
+        });
+    }
+
+    // --- Close-request: warn if dirty ---
+    {
+        let state_c = state.clone();
+        let window_c = window.clone();
+        window.connect_close_request(move |_| {
+            let dirty = state_c.borrow().dirty;
+            if dirty {
+                let dialog = gtk::MessageDialog::new(
+                    Some(&window_c),
+                    gtk::DialogFlags::MODAL,
+                    gtk::MessageType::Question,
+                    gtk::ButtonsType::YesNo,
+                    "You have unsaved changes. Quit anyway?",
+                );
+                dialog.set_title(Some("Unsaved Changes"));
+                let window_ref = window_c.clone();
+                dialog.connect_response(move |dialog, response| {
+                    if response == gtk::ResponseType::Yes {
+                        window_ref.close();
+                    }
+                    dialog.close();
+                });
+                dialog.present();
+                return gtk::glib::Propagation::Stop;
+            }
+            gtk::glib::Propagation::Proceed
         });
     }
 
@@ -1124,6 +1358,20 @@ fn save_profile_from_ui(state: &Rc<RefCell<AppState>>, widgets: &Rc<AppWidgets>)
 }
 
 /// Create a profile sidebar row with name + multiplier badge + active_in count.
+/// Rebuild the entire profile listbox from state.
+fn rebuild_profile_list(state: &Rc<RefCell<AppState>>, widgets: &Rc<AppWidgets>) {
+    // Remove all rows
+    while let Some(row) = widgets.profile_listbox.row_at_index(0) {
+        widgets.profile_listbox.remove(&row);
+    }
+    // Re-add from state
+    let s = state.borrow();
+    for p in s.config.profiles.iter() {
+        let row = make_profile_row(&p.name, p.multiplier, p.active_in_list().len());
+        widgets.profile_listbox.append(&row);
+    }
+}
+
 fn make_profile_row(name: &str, multiplier: u32, active_count: usize) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
     let box_ = gtk::Box::new(Orientation::Horizontal, 8);
