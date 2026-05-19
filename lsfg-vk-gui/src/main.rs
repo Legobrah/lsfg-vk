@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 mod config;
+mod helpers;
 mod overlay;
 mod process;
 mod selector;
@@ -11,12 +12,46 @@ use gtk4::{self as gtk, Align, Orientation, PolicyType};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+/// Load the bundled custom CSS theme.
+fn load_custom_css() {
+    let provider = gtk::CssProvider::new();
+    // Try loading from the executable's directory first, then from project root
+    let css_paths = [
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("style.css"))),
+        Some(std::path::PathBuf::from("style.css")),
+    ];
+    for path in css_paths.iter().flatten() {
+        if path.exists() {
+            provider.load_from_file(&gtk::gio::File::for_path(path));
+            gtk::style_context_add_provider_for_display(
+                &gtk::gdk::Display::default().unwrap(),
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+            return;
+        }
+    }
+    // Fallback: embed from project root (works during development)
+    let css = include_str!("../style.css");
+    provider.load_from_data(css);
+    gtk::style_context_add_provider_for_display(
+        &gtk::gdk::Display::default().unwrap(),
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+}
+
 fn main() {
     let app = Application::builder()
         .application_id("com.lsfgvk.gui")
         .build();
 
-    app.connect_activate(build_ui);
+    app.connect_activate(|app| {
+        load_custom_css();
+        build_ui(app);
+    });
     app.run();
 }
 
@@ -90,9 +125,15 @@ fn build_ui(app: &Application) {
     );
     shortcuts.add_shortcut(save_shortcut);
 
-    // Ctrl+N = New profile (no-op placeholder)
-    let new_action = gtk::CallbackAction::new(move |_widget, _| {
-        gtk::glib::Propagation::Proceed
+    // Ctrl+N = New profile
+    // (wired after widgets are created below via a flag)
+    let new_profile_requested = Rc::new(Cell::new(false));
+    let new_action = gtk::CallbackAction::new({
+        let new_profile_requested = new_profile_requested.clone();
+        move |_widget, _| {
+            new_profile_requested.set(true);
+            gtk::glib::Propagation::Proceed
+        }
     });
     let new_shortcut = gtk::Shortcut::new(
         Some(gtk::ShortcutTrigger::parse_string("<Control>n").unwrap()),
@@ -102,6 +143,18 @@ fn build_ui(app: &Application) {
 
     let content = gtk::Box::new(Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
+
+    // Menu button with import/export
+    let menu = gtk::MenuButton::new();
+    menu.set_icon_name("open-menu-symbolic");
+    menu.set_tooltip_text(Some("Menu"));
+    let menu_model = gio::Menu::new();
+    menu_model.append(Some("Export Profiles..."), Some("win.export"));
+    menu_model.append(Some("Import Profiles..."), Some("win.import"));
+    menu_model.append(Some("Setup Proton Layer"), Some("win.setup-proton"));
+    menu.set_menu_model(Some(&menu_model));
+    header.pack_end(&menu);
+
     content.append(&header);
 
     // --- Main body ---
@@ -126,7 +179,7 @@ fn build_ui(app: &Application) {
     // Populate profiles
     {
         let s = state.borrow();
-        for (_i, p) in s.config.profiles.iter().enumerate() {
+        for p in s.config.profiles.iter() {
             let row = make_profile_row(&p.name, p.multiplier, p.active_in_list().len());
             profile_listbox.append(&row);
         }
@@ -346,7 +399,11 @@ fn build_ui(app: &Application) {
     body.append(&right_panel);
     content.append(&body);
 
-    window.set_content(Some(&content));
+    // Wrap in ToastOverlay for notifications
+    let toast_overlay = adw::ToastOverlay::new();
+    toast_overlay.set_child(Some(&content));
+
+    window.set_content(Some(&toast_overlay));
 
     // Bundle widgets
     let pw = ProfileWidgets {
@@ -807,6 +864,155 @@ fn build_ui(app: &Application) {
                 }
             }
         ));
+    }
+
+    // --- Import / Export / Proton actions ---
+    let export_action = gio::SimpleAction::new("export", None);
+    let import_action = gio::SimpleAction::new("import", None);
+    let setup_proton_action = gio::SimpleAction::new("setup-proton", None);
+
+    // Export profiles
+    {
+        let state_c = state.clone();
+        let toast_overlay = toast_overlay.clone();
+        let window_c = window.clone();
+        export_action.connect_activate(move |_, _| {
+            let dialog = gtk::FileChooserDialog::builder()
+                .title("Export Profiles")
+                .action(gtk::FileChooserAction::Save)
+                .modal(true)
+                .build();
+            dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+            dialog.add_button("Export", gtk::ResponseType::Accept);
+            dialog.set_current_name("lsfg-vk-profiles.json");
+
+            let state_c2 = state_c.clone();
+            let toast_overlay_c = toast_overlay.clone();
+            dialog.connect_response(move |dialog, resp| {
+                if resp == gtk::ResponseType::Accept {
+                    if let Some(file) = dialog.file() {
+                        let path = file.path().unwrap_or_default();
+                        let s = state_c2.borrow();
+                        match helpers::export_profiles(&s.config.profiles, &path) {
+                            Ok(()) => helpers::show_toast(
+                                &toast_overlay_c,
+                                &format!("Exported {} profiles", s.config.profiles.len()),
+                                3,
+                            ),
+                            Err(e) => helpers::show_toast(
+                                &toast_overlay_c,
+                                &format!("Export failed: {e}"),
+                                5,
+                            ),
+                        }
+                    }
+                }
+                dialog.close();
+            });
+            dialog.set_transient_for(Some(&window_c));
+            dialog.show();
+        });
+    }
+
+    // Import profiles
+    {
+        let state_c = state.clone();
+        let widgets_c = widgets.clone();
+        let loading_c = loading.clone();
+        let toast_overlay = toast_overlay.clone();
+        let window_c = window.clone();
+        import_action.connect_activate(move |_, _| {
+            let dialog = gtk::FileChooserDialog::builder()
+                .title("Import Profiles")
+                .action(gtk::FileChooserAction::Open)
+                .modal(true)
+                .build();
+            dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+            dialog.add_button("Import", gtk::ResponseType::Accept);
+
+            let state_c2 = state_c.clone();
+            let widgets_c2 = widgets_c.clone();
+            let loading_c2 = loading_c.clone();
+            let toast_overlay_c = toast_overlay.clone();
+            dialog.connect_response(move |dialog, resp| {
+                if resp == gtk::ResponseType::Accept {
+                    if let Some(file) = dialog.file() {
+                        let path = file.path().unwrap_or_default();
+                        match helpers::import_profiles(&path) {
+                            Ok(imported) => {
+                                let count = imported.len();
+                                let mut s = state_c2.borrow_mut();
+                                s.config.profiles.extend(imported);
+                                s.dirty = true;
+                                drop(s);
+                                rebuild_listbox(&widgets_c2.profile_listbox, &state_c2);
+                                helpers::show_toast(
+                                    &toast_overlay_c,
+                                    &format!("Imported {count} profiles"),
+                                    3,
+                                );
+                                load_profile_into_ui(&state_c2, &widgets_c2, &loading_c2);
+                            }
+                            Err(e) => {
+                                helpers::show_toast(
+                                    &toast_overlay_c,
+                                    &format!("Import failed: {e}"),
+                                    5,
+                                );
+                            }
+                        }
+                    }
+                }
+                dialog.close();
+            });
+            dialog.set_transient_for(Some(&window_c));
+            dialog.show();
+        });
+    }
+
+    // Setup Proton
+    {
+        let toast_overlay = toast_overlay.clone();
+        setup_proton_action.connect_activate(move |_, _| match helpers::setup_proton() {
+            Ok(count) => helpers::show_toast(
+                &toast_overlay,
+                &format!("Proton layer set up ({count} installs patched)"),
+                4,
+            ),
+            Err(e) => helpers::show_toast(&toast_overlay, &format!("Setup failed: {e}"), 5),
+        });
+    }
+
+    window.add_action(&export_action);
+    window.add_action(&import_action);
+    window.add_action(&setup_proton_action);
+
+    // --- Ctrl+N periodic check ---
+    // Check if Ctrl+N was pressed and add a profile using a recurring idle source
+    {
+        let state_c = state.clone();
+        let widgets_c = widgets.clone();
+        let loading_c = loading.clone();
+        let new_profile_requested = new_profile_requested.clone();
+        gtk::glib::timeout_add_seconds_local(1, move || {
+            if new_profile_requested.get() {
+                new_profile_requested.set(false);
+                let mut s = state_c.borrow_mut();
+                let name = format!("New Profile {}", s.config.profiles.len() + 1);
+                s.config.profiles.push(config::GameConf::default());
+                let idx = s.config.profiles.len() - 1;
+                s.config.profiles[idx].name = name.clone();
+                s.dirty = true;
+                drop(s);
+
+                let row = make_profile_row(&name, 2, 0);
+                widgets_c.profile_listbox.append(&row);
+                widgets_c.profile_listbox.select_row(Some(&row));
+                load_profile_into_ui(&state_c, &widgets_c, &loading_c);
+                update_dirty_title(&state_c, &widgets_c);
+            }
+            gtk::glib::ControlFlow::Continue
+        });
     }
 
     window.present();

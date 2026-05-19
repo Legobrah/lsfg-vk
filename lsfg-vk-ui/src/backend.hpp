@@ -35,6 +35,7 @@ namespace lsfgvk::ui {
         Q_PROPERTY(int pacing_mode READ getPacingMode WRITE pacingModeUpdated NOTIFY refreshUI)
         Q_PROPERTY(QStringList gpus READ calculateGPUList NOTIFY refreshUI)
         Q_PROPERTY(int gpu READ getGPU WRITE gpuUpdated NOTIFY refreshUI)
+        Q_PROPERTY(int target_fps READ getTargetFps WRITE targetFpsUpdated NOTIFY refreshUI)
 
     public:
         explicit Backend();
@@ -97,6 +98,10 @@ namespace lsfgvk::ui {
             auto gpu = QString::fromStdString(conf.gpu.value_or("Default"));
             return static_cast<int>(this->m_gpu_list.indexOf(gpu));
         }
+        [[nodiscard]] int getTargetFps() const {
+            VALIDATE_AND_GET_PROFILE(0)
+            return static_cast<int>(conf.target_fps.value_or(0));
+        }
 
 #undef VALIDATE_AND_GET_PROFILE
 
@@ -150,7 +155,6 @@ namespace lsfgvk::ui {
         }
         void pacingModeUpdated(int pacing_mode) {
             VALIDATE_AND_GET_PROFILE()
-            if (pacing_mode == 0)
             switch (pacing_mode) {
                 case 0:
                     conf.pacing = ls::Pacing::None;
@@ -167,6 +171,14 @@ namespace lsfgvk::ui {
                 conf.gpu = std::nullopt;
             else
                 conf.gpu.emplace(gpu.toStdString());
+            MARK_DIRTY()
+        }
+        void targetFpsUpdated(int target_fps) {
+            VALIDATE_AND_GET_PROFILE()
+            if (target_fps <= 0)
+                conf.target_fps = std::nullopt;
+            else
+                conf.target_fps = static_cast<uint32_t>(target_fps);
             MARK_DIRTY()
         }
 

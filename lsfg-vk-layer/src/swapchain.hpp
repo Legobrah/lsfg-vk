@@ -12,7 +12,9 @@
 #include "lsfg-vk-common/vulkan/timeline_semaphore.hpp"
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
 
+#include <chrono>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -79,6 +81,18 @@ namespace lsfgvk::layer {
 
         ls::GameConf profile;
         SwapchainInfo info;
+
+        std::optional<std::chrono::steady_clock::time_point> last_frame_time{};
+        std::chrono::steady_clock::time_point last_frame_time_or_present_start{};
+
+        // Metrics tracking for overlay
+        std::chrono::steady_clock::time_point metrics_start_time{};
+        std::chrono::steady_clock::time_point metrics_last_write{};
+        size_t metrics_frame_count{0};
+        size_t metrics_last_frame_count{0};
+        float metrics_real_fps{0.0f};
+        float metrics_frame_time_ms{0.0f};
+        void writeMetrics();
     };
 
 }

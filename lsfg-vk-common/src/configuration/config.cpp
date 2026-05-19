@@ -101,7 +101,7 @@ namespace {
         return active_in;
     }
     /// parse a pacing method from string
-    Pacing parcingFromString(const std::string& str) {
+    Pacing pacingFromString(const std::string& str) {
         if (str == "none")
             return Pacing::None;
         throw ls::error("unknown pacing method: " + str);
@@ -120,6 +120,11 @@ namespace {
     }
     /// parse a game profile configuration
     GameConf parseGameConf(const toml::table& tbl) {
+        auto target_fps_raw = tbl["target_fps"].value<uint32_t>();
+        std::optional<uint32_t> target_fps{};
+        if (target_fps_raw && *target_fps_raw > 0)
+            target_fps = *target_fps_raw;
+
         const GameConf conf{
             .name = tbl["name"].value_or<std::string>("unnamed"),
             .active_in = activityFromString(tbl["active_in"]),
@@ -127,7 +132,8 @@ namespace {
             .multiplier = tbl["multiplier"].value_or(2U),
             .flow_scale = tbl["flow_scale"].value_or(1.0F),
             .performance_mode = tbl["performance_mode"].value_or(false),
-            .pacing = parcingFromString(tbl["pacing"].value_or<std::string>("none"))
+            .pacing = pacingFromString(tbl["pacing"].value_or<std::string>("none")),
+            .target_fps = target_fps
         };
 
         if (conf.multiplier <= 1)
@@ -172,13 +178,34 @@ namespace {
         const char* gpu = std::getenv("LSFGVK_GPU");
         if (gpu) conf.gpu = std::string(gpu);
         const char* multiplier = std::getenv("LSFGVK_MULTIPLIER");
-        if (multiplier) conf.multiplier = static_cast<size_t>(std::stoul(multiplier));
+        if (multiplier) {
+            try {
+                conf.multiplier = static_cast<size_t>(std::stoul(multiplier));
+            } catch (const std::exception&) {
+                throw ls::error("LSFGVK_MULTIPLIER is not a valid number");
+            }
+        }
         const char* flow_scale = std::getenv("LSFGVK_FLOW_SCALE");
-        if (flow_scale) conf.flow_scale = std::stof(flow_scale);
+        if (flow_scale) {
+            try {
+                conf.flow_scale = std::stof(flow_scale);
+            } catch (const std::exception&) {
+                throw ls::error("LSFGVK_FLOW_SCALE is not a valid number");
+            }
+        }
         const char* performance = std::getenv("LSFGVK_PERFORMANCE_MODE");
         if (performance) conf.performance_mode = std::string(performance) == "1";
         const char* pacing = std::getenv("LSFGVK_PACING");
-        if (pacing) conf.pacing = parcingFromString(std::string(pacing));
+        if (pacing) conf.pacing = pacingFromString(std::string(pacing));
+        const char* target_fps = std::getenv("LSFGVK_TARGET_FPS");
+        if (target_fps) {
+            try {
+                auto val = static_cast<uint32_t>(std::stoul(target_fps));
+                if (val > 0) conf.target_fps = val;
+            } catch (const std::exception&) {
+                throw ls::error("LSFGVK_TARGET_FPS is not a valid number");
+            }
+        }
 
         if (conf.multiplier <= 1)
             throw ls::error("multiplier must be greater than 1");
@@ -247,6 +274,8 @@ void ConfigFile::write(const std::filesystem::path& path) const {
                 profile.insert("pacing", "none");
                 break;
         }
+        if (conf.target_fps)
+            profile.insert("target_fps", static_cast<int64_t>(*conf.target_fps));
 
         profiles.push_back(profile);
     }
@@ -280,6 +309,10 @@ WatchedConfig::WatchedConfig() : path(findConfigurationFile()) {
         ConfigFile::createDefaultConfigFile(this->path);
 
     this->configFile = ConfigFile(this->path);
+
+    // initialize timestamp so the first update() doesn't spuriously reload
+    if (std::filesystem::exists(this->path))
+        this->last_timestamp = std::filesystem::last_write_time(this->path);
 }
 
 bool WatchedConfig::update() {

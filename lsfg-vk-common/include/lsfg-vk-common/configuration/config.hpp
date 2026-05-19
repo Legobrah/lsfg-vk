@@ -41,6 +41,8 @@ namespace ls {
         bool performance_mode{false};
         /// pacing method
         Pacing pacing{Pacing::None};
+        /// optional target output fps cap (0 = uncapped)
+        std::optional<uint32_t> target_fps{};
     };
 
     /// parsed configuration file

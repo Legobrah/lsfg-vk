@@ -1,0 +1,535 @@
+/* ==========================================================================
+   lsfg-vk GUI — Cyan Dark Theme
+   accent: #00d4ff | bg: rgba(6,8,22,0.97) | text: #cdd6f4
+   critical: #f38ba8 | success: rgba(166,227,161,0.75)
+   ========================================================================== */
+
+/* ---------- colour variables (consumed by GTK) ---------- */
+@define-color accent_color       #00d4ff;
+@define-color accent_bg_color    rgba(0,212,255,0.15);
+@define-color accent_fg_color    #00d4ff;
+@define-color window_bg          rgba(6,8,22,0.97);
+@define-color view_bg            rgba(10,14,32,0.95);
+@define-color card_bg            rgba(14,18,38,0.92);
+@define-color text_color         #cdd6f4;
+@define-color dim_label          rgba(205,214,244,0.45);
+@define-color critical_color     #f38ba8;
+@define-color success_color      rgba(166,227,161,0.75);
+@define-color warning_color      #f9e2af;
+@define-color border_color       rgba(205,214,244,0.08);
+@define-color hover_overlay      rgba(0,212,255,0.06);
+@define-color sidebar_bg         rgba(6,8,22,0.60);
+@define-color header_bg          rgba(6,8,22,0.75);
+
+/* ---------- base / window ---------- */
+window,
+dialog,
+popover {
+  background-color: @window_bg;
+  color: @text_color;
+}
+
+/* ---------- header-bar ---------- */
+headerbar {
+  background: @header_bg;
+  border-bottom: 1px solid @border_color;
+  color: @text_color;
+  padding: 4px 10px;
+}
+
+headerbar:backdrop {
+  background: rgba(6,8,22,0.55);
+}
+
+headerbar .title {
+  color: @accent_color;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+headerbar button {
+  color: @text_color;
+  border-radius: 8px;
+}
+
+headerbar button:hover {
+  background: @hover_overlay;
+  color: @accent_color;
+}
+
+/* ---------- navigation-sidebar (left panel profile list) ---------- */
+.navigation-sidebar {
+  background: @sidebar_bg;
+  border-radius: 10px;
+  padding: 4px;
+  border: 1px solid @border_color;
+}
+
+.navigation-sidebar row {
+  margin: 2px 4px;
+  border-radius: 8px;
+  padding: 6px 10px;
+  transition: all 180ms ease;
+  color: @text_color;
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.navigation-sidebar row:hover {
+  background: rgba(0,212,255,0.06);
+  border-color: rgba(0,212,255,0.10);
+}
+
+.navigation-sidebar row:selected {
+  background: linear-gradient(135deg,
+    rgba(0,212,255,0.14) 0%,
+    rgba(0,212,255,0.06) 100%);
+  border-color: rgba(0,212,255,0.30);
+  box-shadow:
+    0 0 0 1px rgba(0,212,255,0.08),
+    inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+.navigation-sidebar row:selected:hover {
+  background: linear-gradient(135deg,
+    rgba(0,212,255,0.20) 0%,
+    rgba(0,212,255,0.10) 100%);
+}
+
+.navigation-sidebar row:selected image {
+  color: @accent_color;
+  -gtk-icon-filter: none;
+}
+
+/* ---------- tag / accent badges (multiplier pill) ---------- */
+.tag.accent {
+  background: linear-gradient(135deg, #00d4ff, #0099cc);
+  color: #060816;
+  font-weight: 800;
+  font-size: 0.75rem;
+  padding: 2px 10px;
+  border-radius: 999px;
+  box-shadow:
+    0 0 8px rgba(0,212,255,0.30),
+    0 1px 3px rgba(0,0,0,0.40);
+  letter-spacing: 0.04em;
+}
+
+.tag.accent:selected & {
+  box-shadow:
+    0 0 14px rgba(0,212,255,0.50),
+    0 1px 3px rgba(0,0,0,0.40);
+}
+
+/* ---------- chip pills (active-in selector entries) ---------- */
+.pill {
+  background: rgba(0,212,255,0.08);
+  border: 1px solid rgba(0,212,255,0.18);
+  border-radius: 999px;
+  padding: 3px 10px;
+  color: @text_color;
+  transition: all 160ms ease;
+}
+
+.pill:hover {
+  background: rgba(0,212,255,0.16);
+  border-color: rgba(0,212,255,0.30);
+}
+
+.pill label {
+  color: @text_color;
+  font-size: 0.82rem;
+}
+
+.pill .small-button {
+  background: transparent;
+  border: none;
+  padding: 2px;
+  min-width: 18px;
+  min-height: 18px;
+  border-radius: 50%;
+  color: rgba(205,214,244,0.35);
+  transition: color 140ms ease, background 140ms ease;
+}
+
+.pill .small-button:hover {
+  color: @critical_color;
+  background: rgba(243,139,168,0.12);
+}
+
+/* ---------- pill-shaped action buttons (validate / save) ---------- */
+button.pill {
+  background: rgba(0,212,255,0.08);
+  border: 1px solid rgba(0,212,255,0.20);
+  border-radius: 999px;
+  padding: 6px 20px;
+  font-weight: 600;
+  color: @accent_color;
+  transition: all 180ms ease;
+}
+
+button.pill:hover {
+  background: rgba(0,212,255,0.16);
+  border-color: rgba(0,212,255,0.40);
+  box-shadow: 0 0 10px rgba(0,212,255,0.12);
+}
+
+button.pill:active {
+  background: rgba(0,212,255,0.24);
+}
+
+button.pill.suggested-action {
+  background: linear-gradient(135deg, #00d4ff, #0099cc);
+  color: #060816;
+  border: none;
+  font-weight: 700;
+}
+
+button.pill.suggested-action:hover {
+  background: linear-gradient(135deg, #33ddff, #00bbdd);
+  box-shadow: 0 0 16px rgba(0,212,255,0.25);
+}
+
+button.pill.destructive-action,
+button.destructive-action {
+  color: @critical_color;
+  border-color: rgba(243,139,168,0.25);
+  background: rgba(243,139,168,0.06);
+}
+
+button.destructive-action:hover {
+  background: rgba(243,139,168,0.14);
+  border-color: rgba(243,139,168,0.40);
+}
+
+/* ---------- toolbar (inline status bar) ---------- */
+.toolbar {
+  background: rgba(0,212,255,0.04);
+  border: 1px solid rgba(0,212,255,0.10);
+  border-radius: 10px;
+  padding: 6px 12px;
+  color: @text_color;
+}
+
+.toolbar image.success {
+  color: @success_color;
+  -gtk-icon-filter: none;
+}
+
+.toolbar image.error {
+  color: @critical_color;
+  -gtk-icon-filter: none;
+}
+
+.toolbar image.warning {
+  color: @warning_color;
+  -gtk-icon-filter: none;
+}
+
+.toolbar .monospace {
+  color: @accent_color;
+  font-weight: 600;
+}
+
+/* ---------- running-game indicator ---------- */
+.success {
+  color: @success_color;
+}
+
+.error {
+  color: @critical_color;
+}
+
+.warning {
+  color: @warning_color;
+}
+
+image.success {
+  color: @success_color;
+  -gtk-icon-filter: none;
+}
+
+image.error {
+  color: @critical_color;
+  -gtk-icon-filter: none;
+}
+
+image.warning {
+  color: @warning_color;
+  -gtk-icon-filter: none;
+}
+
+label.success {
+  color: @success_color;
+}
+
+label.error {
+  color: @critical_color;
+}
+
+label.warning {
+  color: @warning_color;
+}
+
+/* ---------- toast / in-app notification overrides ---------- */
+toast,
+.notification {
+  background: rgba(14,18,38,0.96);
+  border: 1px solid rgba(0,212,255,0.18);
+  border-radius: 12px;
+  padding: 10px 16px;
+  color: @text_color;
+  box-shadow:
+    0 4px 24px rgba(0,0,0,0.50),
+    0 0 0 1px rgba(0,212,255,0.06);
+}
+
+toast button,
+.notification button {
+  border-radius: 8px;
+  color: @accent_color;
+}
+
+toast button:hover,
+.notification button:hover {
+  background: rgba(0,212,255,0.10);
+}
+
+/* ---------- empty-state styling (no profiles selected) ---------- */
+.empty-state {
+  color: @dim_label;
+  font-size: 1rem;
+  padding: 48px 24px;
+  border-radius: 12px;
+  background: rgba(10,14,32,0.40);
+  border: 1px dashed rgba(205,214,244,0.10);
+}
+
+empty-state,
+adwpreferencesgroup description {
+  color: @dim_label;
+}
+
+/* ---------- preferences group ---------- */
+preferencesgroup,
+adwpreferencesgroup {
+  color: @text_color;
+}
+
+preferencesgroup title,
+adwpreferencesgroup title {
+  color: @accent_color;
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: 0.01em;
+}
+
+preferencesgroup description,
+adwpreferencesgroup description {
+  color: @dim_label;
+  font-size: 0.88rem;
+}
+
+/* ---------- general rows / cards ---------- */
+row,
+actionrow,
+entryrow,
+spinrow,
+comboRow,
+adwentryrow,
+adwspinrow,
+adwcomborow,
+adwactionrow {
+  background: transparent;
+  color: @text_color;
+  border-radius: 8px;
+  transition: background 140ms ease;
+}
+
+row:hover {
+  background: @hover_overlay;
+}
+
+/* ---------- entry / search inputs ---------- */
+entry,
+searchentry,
+adwentryrow entry {
+  background: rgba(10,14,32,0.60);
+  border: 1px solid @border_color;
+  border-radius: 8px;
+  color: @text_color;
+  caret-color: @accent_color;
+  selection {
+    background: rgba(0,212,255,0.20);
+    color: @text_color;
+  }
+}
+
+entry:focus,
+searchentry:focus,
+adwentryrow entry:focus {
+  border-color: rgba(0,212,255,0.40);
+  box-shadow: 0 0 0 2px rgba(0,212,255,0.08);
+}
+
+entry placeholder {
+  color: @dim_label;
+}
+
+/* ---------- popover ---------- */
+popover {
+  background: rgba(10,14,32,0.98);
+  border: 1px solid rgba(0,212,255,0.12);
+  border-radius: 12px;
+  box-shadow:
+    0 8px 32px rgba(0,0,0,0.55),
+    0 0 0 1px rgba(0,212,255,0.06);
+  padding: 4px;
+}
+
+popover .rich-list row {
+  border-radius: 8px;
+  margin: 1px 0;
+}
+
+popover .rich-list row:hover {
+  background: rgba(0,212,255,0.08);
+}
+
+popover .rich-list row:active {
+  background: rgba(0,212,255,0.14);
+}
+
+/* ---------- separator ---------- */
+separator {
+  background: @border_color;
+  min-height: 1px;
+  min-width: 1px;
+}
+
+/* ---------- scrolled-window ---------- */
+scrolledwindow scrollbar {
+  background: transparent;
+}
+
+scrolledwindow scrollbar slider {
+  background: rgba(205,214,244,0.12);
+  border-radius: 999px;
+  min-width: 5px;
+  min-height: 5px;
+}
+
+scrolledwindow scrollbar slider:hover {
+  background: rgba(205,214,244,0.22);
+}
+
+/* ---------- dim-label / caption helpers ---------- */
+.dim-label {
+  color: @dim_label;
+}
+
+.caption {
+  font-size: 0.78rem;
+}
+
+.caption-heading {
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+/* ---------- monospace ---------- */
+.monospace {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.82rem;
+}
+
+.small-body {
+  font-size: 0.80rem;
+  line-height: 1.45;
+}
+
+/* ---------- switch ---------- */
+switch {
+  border-radius: 999px;
+}
+
+switch slider {
+  border-radius: 999px;
+}
+
+switch:checked {
+  background: rgba(0,212,255,0.35);
+}
+
+/* ---------- spin-button ---------- */
+spinbutton {
+  color: @text_color;
+  border-radius: 6px;
+}
+
+spinbutton button {
+  color: @accent_color;
+  border-radius: 6px;
+}
+
+/* ---------- combo ---------- */
+combobox {
+  color: @text_color;
+}
+
+/* ---------- toggle button ---------- */
+togglebutton:checked {
+  background: rgba(0,212,255,0.12);
+  color: @accent_color;
+  border-color: rgba(0,212,255,0.25);
+}
+
+/* ---------- link ---------- */
+link {
+  color: @accent_color;
+}
+
+/* ---------- scale / progress ---------- */
+scale trough {
+  background: rgba(205,214,244,0.08);
+  border-radius: 999px;
+}
+
+scale highlight,
+progressbar progress {
+  background: @accent_color;
+  border-radius: 999px;
+}
+
+/* ---------- small-button (icon buttons inside chips etc.) ---------- */
+.small-button {
+  padding: 2px;
+  min-width: 20px;
+  min-height: 20px;
+}
+
+.small-button.circular {
+  border-radius: 50%;
+}
+
+.small-button:hover {
+  background: rgba(205,214,244,0.08);
+}
+
+/* ---------- overlay HUD window ---------- */
+window decoration {
+  border-radius: 12px;
+}
+
+/* ---------- title-4 ---------- */
+.title-4 {
+  color: @text_color;
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+}
+
+/* ---------- status label ---------- */
+label.error {
+  color: @critical_color;
+}

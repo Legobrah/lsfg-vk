@@ -11,11 +11,17 @@
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <exception>
+#include <fstream>
 #include <functional>
 #include <optional>
+#include <sstream>
+#include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -50,6 +56,55 @@ namespace {
     }
 }
 
+void Swapchain::writeMetrics() {
+    // Calculate FPS from frame count delta
+    auto now = std::chrono::steady_clock::now();
+    auto dt = std::chrono::duration<float>(now - metrics_last_write).count();
+    if (dt > 0.5f) {
+        size_t delta = metrics_frame_count - metrics_last_frame_count;
+        metrics_real_fps = static_cast<float>(delta) / dt;
+        metrics_last_frame_count = metrics_frame_count;
+        metrics_last_write = now;
+    }
+
+    float uptime = std::chrono::duration<float>(now - metrics_start_time).count();
+
+    // Read process name from /proc/self/comm
+    std::string proc_name = "unknown";
+    {
+        std::ifstream comm("/proc/self/comm");
+        if (comm.is_open()) {
+            std::getline(comm, proc_name);
+            // Remove trailing newline
+            if (!proc_name.empty() && proc_name.back() == '\n')
+                proc_name.pop_back();
+        }
+    }
+
+    // Write to temp file then rename (atomic)
+    std::string tmp_path = "/tmp/lsfg-vk-metrics.json.tmp";
+    std::string final_path = "/tmp/lsfg-vk-metrics.json";
+    {
+        std::ofstream f(tmp_path, std::ios::trunc);
+        if (f.is_open()) {
+            f << "{\n";
+            f << "  \"app_name\": \"" << proc_name << "\",\n";
+            f << "  \"profile_name\": \"" << profile.name << "\",\n";
+            f << "  \"multiplier\": " << profile.multiplier << ",\n";
+            f << "  \"real_fps\": " << metrics_real_fps << ",\n";
+            f << "  \"output_fps\": " << (metrics_real_fps * profile.multiplier) << ",\n";
+            f << "  \"frame_time_ms\": " << metrics_frame_time_ms << ",\n";
+            f << "  \"flow_scale\": " << profile.flow_scale << ",\n";
+            f << "  \"performance_mode\": " << (profile.performance_mode ? "true" : "false") << ",\n";
+            f << "  \"dropped_frames\": 0,\n";
+            f << "  \"uptime_secs\": " << uptime << "\n";
+            f << "}\n";
+        }
+    }
+    // Atomic rename
+    std::rename(tmp_path.c_str(), final_path.c_str());
+}
+
 void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint32_t maxImages,
         VkSwapchainCreateInfoKHR& createInfo) {
     createInfo.imageUsage |=
@@ -71,7 +126,10 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
         instance(backend),
         profile(std::move(profile)), info(std::move(info)) {
     const VkExtent2D extent = this->info.extent;
-    const bool hdr = this->info.format > 57;
+    const bool hdr = (this->info.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32
+        || this->info.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32
+        || this->info.format == VK_FORMAT_R16G16B16A16_SFLOAT
+        || this->info.format == VK_FORMAT_B10G11R11_UFLOAT_PACK32);
 
     std::vector<int> sourceFds(2);
     std::vector<int> destinationFds(this->profile.multiplier - 1);
@@ -112,6 +170,11 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
 
     this->renderCommandBuffer.emplace(vk);
     this->renderFence.emplace(vk);
+
+    // Initialize metrics
+    this->metrics_start_time = std::chrono::steady_clock::now();
+    this->metrics_last_write = this->metrics_start_time;
+
     for (size_t i = 0; i < this->destinationImages.size(); i++) {
         this->passes.emplace_back(RenderPass {
             .commandBuffer = vk::CommandBuffer(vk),
@@ -132,6 +195,29 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         VkQueue queue, VkSwapchainKHR swapchain,
         void* next_chain, uint32_t imageIdx,
         const std::vector<VkSemaphore>& semaphores) {
+    // Track frame time for metrics
+    auto present_start = std::chrono::steady_clock::now();
+    if (this->metrics_frame_count > 0) {
+        this->metrics_frame_time_ms =
+            std::chrono::duration<float, std::milli>(present_start - this->last_frame_time_or_present_start).count();
+    }
+    this->last_frame_time_or_present_start = present_start;
+    this->metrics_frame_count++;
+
+    // enforce target fps cap by throttling real frame rate
+    if (this->profile.target_fps) {
+        const auto frame_interval = std::chrono::microseconds(
+            (this->profile.multiplier * 1000000ULL) / *this->profile.target_fps
+        );
+        if (this->last_frame_time) {
+            const auto next_frame = *this->last_frame_time + frame_interval;
+            const auto now = std::chrono::steady_clock::now();
+            if (now < next_frame)
+                std::this_thread::sleep_until(next_frame);
+        }
+        this->last_frame_time = std::chrono::steady_clock::now();
+    }
+
     const auto& swapchainImage = this->info.images.at(imageIdx);
     const auto& sourceImage = this->sourceImages.at(this->fidx % 2);
 
@@ -301,5 +387,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
 
     this->fidx++;
+    // Write metrics periodically (~500ms)
+    writeMetrics();
     return res;
 }

@@ -230,6 +230,21 @@ ApplicationWindow {
                 }
 
                 GroupEntry {
+                    title: "Target Output FPS"
+                    description: "Cap output FPS by throttling real frames (0 = uncapped)"
+
+                    SpinBox {
+                        Layout.alignment: Qt.AlignRight
+
+                        from: 0
+                        to: 1000
+
+                        value: backend.target_fps
+                        onValueModified: backend.target_fps = value
+                    }
+                }
+
+                GroupEntry {
                     title: "Pacing Mode"
                     description: "Change how frames are presented to the display"
 

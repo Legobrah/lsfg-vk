@@ -18,6 +18,9 @@ pub struct GlobalConf {
     /// Whether to allow FP16 acceleration
     #[serde(default = "default_true")]
     pub allow_fp16: bool,
+    /// Global enable/disable toggle — when false, the layer is not loaded
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 /// Per-game profile configuration
@@ -202,6 +205,7 @@ pub fn default_config() -> Config {
         global: GlobalConf {
             dll: None,
             allow_fp16: true,
+            enabled: true,
         },
         profiles: vec![GameConf {
             name: "4x FG / 85% [Performance]".into(),
