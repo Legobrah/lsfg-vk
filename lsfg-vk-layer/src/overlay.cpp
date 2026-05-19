@@ -248,12 +248,7 @@ Overlay::Overlay(const vk::Vulkan& vk,
         std::nullopt   // no export (local image)
     );
 
-    // Create staging buffer (host-visible, persistently mapped)
-    const size_t bufSize = OVERLAY_WIDTH * OVERLAY_HEIGHT * 4;
-    stagingBuffer_.emplace(vk, pixels_.data(), bufSize,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-
-    // Render initial empty frame
+    // Render initial frame into pixel buffer
     renderTextToBuffer();
 }
 
@@ -495,7 +490,13 @@ void Overlay::renderTextToBuffer() {
 }
 
 void Overlay::uploadToGPU(const vk::Vulkan& vk) {
-    if (!stagingBuffer_.has_value() || !image_.has_value()) return;
+    if (!image_.has_value()) return;
+
+    // Recreate staging buffer with fresh pixel data each frame.
+    // The buffer is small (~166KB) so allocation is cheap.
+    const size_t bufSize = OVERLAY_WIDTH * OVERLAY_HEIGHT * 4;
+    stagingBuffer_.emplace(vk, pixels_.data(), bufSize,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
 
     // Create a temporary command buffer for the upload
     vk::CommandBuffer cmd(vk);
