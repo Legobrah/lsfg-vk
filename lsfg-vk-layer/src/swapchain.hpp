@@ -14,11 +14,14 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
+
+#include "overlay.hpp"
 
 namespace lsfgvk::layer {
 
@@ -95,6 +98,11 @@ namespace lsfgvk::layer {
         float metrics_native_latency_ms{0.0f};
         float metrics_fg_latency_ms{0.0f};
         void writeMetrics();
+
+        // In-game overlay (optional, lazily created)
+        std::unique_ptr<Overlay> inGameOverlay;
+        void ensureOverlay(const vk::Vulkan& vk);
+        void updateOverlay(const vk::Vulkan& vk);
     };
 
 }

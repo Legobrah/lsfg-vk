@@ -422,7 +422,7 @@ fn build_ui(app: &Application) {
     let bottom_bar = gtk::Box::new(Orientation::Vertical, 6);
     bottom_bar.set_margin_top(4);
 
-    let (inline_status, _layer_lbl, _active_lbl, monitor_btn) = overlay::build_inline_status();
+    let (inline_status, _layer_lbl, _active_lbl, monitor_btn, _osd_btn) = overlay::build_inline_status();
 
     let btn_row = gtk::Box::new(Orientation::Horizontal, 12);
     btn_row.append(&status_label);

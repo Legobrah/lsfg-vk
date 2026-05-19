@@ -254,8 +254,8 @@ fn refresh_hud(metrics_label: &gtk::Label, layer_label: &gtk::Label) {
 }
 
 /// Build an inline status widget for embedding in the main window.
-/// Returns (box, layer_label, active_label, monitor_button).
-pub fn build_inline_status() -> (gtk::Box, gtk::Label, gtk::Label, gtk::ToggleButton) {
+/// Returns (box, layer_label, active_label, monitor_button, osd_button).
+pub fn build_inline_status() -> (gtk::Box, gtk::Label, gtk::Label, gtk::ToggleButton, gtk::ToggleButton) {
     let box_ = gtk::Box::new(Orientation::Horizontal, 10);
     box_.add_css_class("toolbar");
     box_.set_margin_top(4);
@@ -282,6 +282,15 @@ pub fn build_inline_status() -> (gtk::Box, gtk::Label, gtk::Label, gtk::ToggleBu
     metrics_label.set_halign(Align::End);
     metrics_label.add_css_class("monospace");
 
+    // In-Game OSD toggle button (writes/creates /tmp/lsfg-vk-osd)
+    let osd_btn = gtk::ToggleButton::new();
+    osd_btn.set_icon_name("view-reveal-symbolic");
+    osd_btn.set_tooltip_text(Some("Toggle In-Game Overlay OSD"));
+    osd_btn.set_valign(Align::Center);
+    // Read initial state from file
+    osd_btn.set_active(std::path::Path::new("/tmp/lsfg-vk-osd").exists()
+        && std::fs::read_to_string("/tmp/lsfg-vk-osd").unwrap_or_default().starts_with('1'));
+
     // Monitor button
     let monitor_btn = gtk::ToggleButton::new();
     monitor_btn.set_icon_name("utilities-system-monitor-symbolic");
@@ -293,7 +302,31 @@ pub fn build_inline_status() -> (gtk::Box, gtk::Label, gtk::Label, gtk::ToggleBu
     box_.append(&active_icon);
     box_.append(&active_label);
     box_.append(&metrics_label);
+    box_.append(&osd_btn);
     box_.append(&monitor_btn);
+
+    // OSD toggle handler: write/remove /tmp/lsfg-vk-osd
+    {
+        let osd_btn_r = osd_btn.clone();
+        osd_btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                let _ = std::fs::write("/tmp/lsfg-vk-osd", "1");
+                osd_btn_r.set_tooltip_text(Some("In-Game OSD: ON (click to hide)"));
+                osd_btn_r.add_css_class("success");
+            } else {
+                let _ = std::fs::remove_file("/tmp/lsfg-vk-osd");
+                osd_btn_r.set_tooltip_text(Some("In-Game OSD: OFF (click to show)"));
+                osd_btn_r.remove_css_class("success");
+            }
+        });
+    }
+    // Set initial tooltip
+    if osd_btn.is_active() {
+        osd_btn.set_tooltip_text(Some("In-Game OSD: ON (click to hide)"));
+        osd_btn.add_css_class("success");
+    } else {
+        osd_btn.set_tooltip_text(Some("In-Game OSD: OFF (click to show)"));
+    }
 
     // Initial refresh
     let layer_label_r = layer_label.clone();
@@ -318,7 +351,7 @@ pub fn build_inline_status() -> (gtk::Box, gtk::Label, gtk::Label, gtk::ToggleBu
         gtk::glib::ControlFlow::Continue
     });
 
-    (box_, layer_label, active_label, monitor_btn)
+    (box_, layer_label, active_label, monitor_btn, osd_btn)
 }
 
 fn refresh_inline(

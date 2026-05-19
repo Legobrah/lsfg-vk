@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "swapchain.hpp"
+#include "overlay.hpp"
 #include "lsfg-vk-backend/lsfgvk.hpp"
 #include "lsfg-vk-common/configuration/config.hpp"
 #include "lsfg-vk-common/helpers/errors.hpp"
@@ -123,6 +124,34 @@ void Swapchain::writeMetrics() {
     }
     // Atomic rename
     std::rename(tmp_path.c_str(), final_path.c_str());
+}
+
+void Swapchain::ensureOverlay(const vk::Vulkan& vk) {
+    if (!inGameOverlay) {
+        try {
+            inGameOverlay = std::make_unique<Overlay>(vk, profile.name, profile.multiplier);
+        } catch (const std::exception& e) {
+            // Overlay is optional — don't crash if init fails
+            std::fprintf(stderr, "lsfg-vk: overlay init failed: %s\n", e.what());
+        }
+    }
+}
+
+void Swapchain::updateOverlay(const vk::Vulkan& vk) {
+    if (!inGameOverlay) return;
+    try {
+        inGameOverlay->update(vk,
+            metrics_real_fps,
+            metrics_real_fps * profile.multiplier,
+            metrics_native_latency_ms,
+            metrics_fg_latency_ms,
+            metrics_frame_time_ms,
+            std::chrono::duration<float>(
+                std::chrono::steady_clock::now() - metrics_start_time).count()
+        );
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "lsfg-vk: overlay update failed: %s\n", e.what());
+    }
 }
 
 void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint32_t maxImages,
@@ -356,6 +385,15 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             }
         );
 
+        // Composite in-game overlay onto this swapchain image
+        if (this->inGameOverlay && Overlay::isEnabled()) {
+            this->inGameOverlay->render(vk,
+                pass.commandBuffer.handle(),
+                aquiredSwapchainImage,
+                this->info.extent,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        }
+
         std::vector<VkSemaphore> waitSemaphores{ pass.acquireSemaphore.handle() };
         if (i) { // non-first pass
             const auto& prevPCS = this->postCopySemaphores.at((this->idx - 1) % this->postCopySemaphores.size());
@@ -407,6 +445,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
 
     this->fidx++;
+    // Update and render in-game overlay (if enabled)
+    ensureOverlay(vk);
+    updateOverlay(vk);
     // Write metrics periodically (~500ms)
     writeMetrics();
     return res;

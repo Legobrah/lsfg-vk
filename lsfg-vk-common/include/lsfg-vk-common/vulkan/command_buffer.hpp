@@ -27,6 +27,10 @@ namespace vk {
         /// @throws ls::vulkan_error on failure
         CommandBuffer(const vk::Vulkan& vk);
 
+        /// get the command buffer handle
+        /// @return the command buffer handle
+        [[nodiscard]] const auto& handle() const { return *this->commandBuffer; }
+
         /// begin recording commands
         /// @param vk the vulkan instance
         /// @throws ls::vulkan_error on failure
